@@ -1,0 +1,3 @@
+PySide6
+pandas
+python-dotenv
