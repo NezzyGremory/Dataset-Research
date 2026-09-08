@@ -11,9 +11,26 @@ class DatasetFingerprint:
 
     Fingerprint digunakan untuk merangkum karakteristik dataset
     dan menjadi identitas heuristik dataset.
+
+    Catatan:
+    - Fingerprint bukan identitas absolut dataset.
+    - Target detection bersifat heuristik.
+    - Semantic type detection digunakan untuk membantu
+      proses ML task detection dan dataset similarity.
     """
 
-    def generate_representation(self, dataframe: pd.DataFrame) -> dict:
+    # ==========================================================
+    # MAIN
+    # ==========================================================
+
+    def generate_representation(
+        self,
+        dataframe: pd.DataFrame,
+    ) -> dict:
+        """
+        Generate normalized dataset representation.
+        """
+
         rows = int(len(dataframe))
         columns_count = int(len(dataframe.columns))
 
@@ -29,7 +46,9 @@ class DatasetFingerprint:
 
             columns.append(column_signature)
 
-        characteristics = self._build_characteristics(columns)
+        characteristics = self._build_characteristics(
+            columns
+        )
 
         target_candidates = [
             column["name"]
@@ -37,9 +56,13 @@ class DatasetFingerprint:
             if column["target_candidate"]
         ]
 
-        keywords = self._extract_keywords(dataframe)
+        keywords = self._extract_keywords(
+            dataframe
+        )
 
-        categories = self._build_categories(columns)
+        categories = self._build_categories(
+            columns
+        )
 
         return {
             "rows": rows,
@@ -51,27 +74,46 @@ class DatasetFingerprint:
             "column_signature": columns,
         }
 
+    # ==========================================================
+    # COLUMN ANALYSIS
+    # ==========================================================
+
     def _analyze_column(
         self,
         column,
         series: pd.Series,
     ) -> dict:
+        """
+        Analyze one dataset column.
+        """
 
         column_name = str(column)
         row_count = len(series)
 
-        missing_count = int(series.isna().sum())
+        missing_count = int(
+            series.isna().sum()
+        )
 
         missing_percentage = (
-            round((missing_count / row_count) * 100, 4)
+            round(
+                (missing_count / row_count) * 100,
+                4,
+            )
             if row_count > 0
             else 0.0
         )
 
-        unique_count = int(series.nunique(dropna=True))
+        unique_count = int(
+            series.nunique(
+                dropna=True
+            )
+        )
 
         unique_percentage = (
-            round((unique_count / row_count) * 100, 4)
+            round(
+                (unique_count / row_count) * 100,
+                4,
+            )
             if row_count > 0
             else 0.0
         )
@@ -100,8 +142,10 @@ class DatasetFingerprint:
 
         signature = {
             "name": column_name,
-            "normalized_name": self._normalize_column_name(
-                column_name
+            "normalized_name": (
+                self._normalize_column_name(
+                    column_name
+                )
             ),
             "dtype": dtype,
             "semantic_type": semantic_type,
@@ -116,29 +160,40 @@ class DatasetFingerprint:
         }
 
         numeric_statistics = (
-            self._get_numeric_statistics(series)
+            self._get_numeric_statistics(
+                series
+            )
         )
 
         if numeric_statistics is not None:
-            signature["numeric_statistics"] = (
-                numeric_statistics
-            )
+            signature[
+                "numeric_statistics"
+            ] = numeric_statistics
 
         categorical_statistics = (
-            self._get_categorical_statistics(series)
+            self._get_categorical_statistics(
+                series
+            )
         )
 
         if categorical_statistics is not None:
-            signature["categorical_statistics"] = (
-                categorical_statistics
-            )
+            signature[
+                "categorical_statistics"
+            ] = categorical_statistics
 
         return signature
+
+    # ==========================================================
+    # CHARACTERISTICS
+    # ==========================================================
 
     def _build_characteristics(
         self,
         columns: list,
     ) -> dict:
+        """
+        Build dataset-level characteristics.
+        """
 
         characteristics = {
             "numeric_columns": 0,
@@ -150,32 +205,57 @@ class DatasetFingerprint:
         }
 
         for column in columns:
-            semantic_type = column["semantic_type"]
+
+            semantic_type = column[
+                "semantic_type"
+            ]
 
             if semantic_type == "numeric":
-                characteristics["numeric_columns"] += 1
+                characteristics[
+                    "numeric_columns"
+                ] += 1
 
             elif semantic_type == "categorical":
-                characteristics["categorical_columns"] += 1
+                characteristics[
+                    "categorical_columns"
+                ] += 1
 
             elif semantic_type == "datetime":
-                characteristics["datetime_columns"] += 1
+                characteristics[
+                    "datetime_columns"
+                ] += 1
 
             elif semantic_type == "text":
-                characteristics["text_columns"] += 1
+                characteristics[
+                    "text_columns"
+                ] += 1
 
             elif semantic_type == "boolean":
-                characteristics["boolean_columns"] += 1
+                characteristics[
+                    "boolean_columns"
+                ] += 1
 
             if column["potential_id"]:
-                characteristics["potential_id_columns"] += 1
+                characteristics[
+                    "potential_id_columns"
+                ] += 1
 
         return characteristics
+
+    # ==========================================================
+    # KEYWORDS
+    # ==========================================================
 
     def _extract_keywords(
         self,
         dataframe: pd.DataFrame,
     ) -> list:
+        """
+        Extract basic keywords from column names.
+
+        Keyword extraction di sini masih bersifat lightweight.
+        NLP yang lebih kompleks dilakukan di module nlp/.
+        """
 
         keywords = set()
 
@@ -195,8 +275,10 @@ class DatasetFingerprint:
 
         for column in dataframe.columns:
 
-            normalized = self._normalize_column_name(
-                str(column)
+            normalized = (
+                self._normalize_column_name(
+                    str(column)
+                )
             )
 
             parts = normalized.split("_")
@@ -216,10 +298,18 @@ class DatasetFingerprint:
 
         return sorted(keywords)
 
+    # ==========================================================
+    # CATEGORIES
+    # ==========================================================
+
     def _build_categories(
         self,
         columns: list,
     ) -> list:
+        """
+        Build high-level dataset categories
+        from semantic column types.
+        """
 
         categories = set()
 
@@ -245,10 +335,17 @@ class DatasetFingerprint:
 
         return sorted(categories)
 
+    # ==========================================================
+    # COLUMN NAME NORMALIZATION
+    # ==========================================================
+
     def _normalize_column_name(
         self,
         column_name: str,
     ) -> str:
+        """
+        Normalize column name into a comparable format.
+        """
 
         normalized = column_name.strip().lower()
 
@@ -266,41 +363,100 @@ class DatasetFingerprint:
 
         return normalized.strip("_")
 
+    # ==========================================================
+    # SEMANTIC TYPE DETECTION
+    # ==========================================================
+
     def _detect_semantic_type(
         self,
         column_name: str,
         series: pd.Series,
     ) -> str:
+        """
+        Detect semantic type of a column.
+
+        Important:
+        Numeric columns are treated as numeric by default.
+
+        Numeric columns are NOT automatically converted into
+        categorical simply because they have a small number
+        of unique values.
+
+        Example:
+            Pclass -> categorical
+            Price  -> numeric
+            Age    -> numeric
+            Rating -> numeric
+
+        Certain column names strongly indicate categorical
+        meaning and are therefore handled as categorical.
+        """
+
+        normalized_name = (
+            self._normalize_column_name(
+                column_name
+            )
+        )
+
+        # --------------------------------------------------
+        # 1. BOOLEAN
+        # --------------------------------------------------
 
         if pd.api.types.is_bool_dtype(series):
             return "boolean"
 
-        if pd.api.types.is_datetime64_any_dtype(series):
+        # --------------------------------------------------
+        # 2. DATETIME
+        # --------------------------------------------------
+
+        if pd.api.types.is_datetime64_any_dtype(
+            series
+        ):
             return "datetime"
 
-        if pd.api.types.is_numeric_dtype(series):
+        # --------------------------------------------------
+        # 3. NUMERIC
+        # --------------------------------------------------
 
-            # Numeric columns with very low cardinality
-            # can behave like categorical features.
-            unique_count = series.nunique(
-                dropna=True
-            )
+        if pd.api.types.is_numeric_dtype(
+            series
+        ):
 
-            if unique_count <= 10:
+            # Numeric columns that semantically represent
+            # categories.
+            categorical_numeric_keywords = {
+                "class",
+                "category",
+                "type",
+                "status",
+                "group",
+                "level",
+                "rank",
+                "grade",
+                "segment",
+                "tier",
+                "code",
+            }
+
+            if normalized_name in (
+                categorical_numeric_keywords
+            ):
                 return "categorical"
 
             return "numeric"
+
+        # --------------------------------------------------
+        # 4. EMPTY / ALL NULL
+        # --------------------------------------------------
 
         non_null = series.dropna()
 
         if len(non_null) == 0:
             return "text"
 
-        unique_count = non_null.nunique()
-
-        normalized_name = self._normalize_column_name(
-            column_name
-        )
+        # --------------------------------------------------
+        # 5. NON-NUMERIC CATEGORICAL
+        # --------------------------------------------------
 
         categorical_keywords = {
             "sex",
@@ -315,13 +471,31 @@ class DatasetFingerprint:
             "department",
             "embarked",
             "group",
+            "level",
+            "grade",
+            "segment",
+            "tier",
         }
 
-        if normalized_name in categorical_keywords:
+        if normalized_name in (
+            categorical_keywords
+        ):
             return "categorical"
+
+        unique_count = int(
+            non_null.nunique()
+        )
+
+        # --------------------------------------------------
+        # 6. LOW CARDINALITY STRING
+        # --------------------------------------------------
 
         if unique_count <= 20:
             return "categorical"
+
+        # --------------------------------------------------
+        # 7. TEXT
+        # --------------------------------------------------
 
         average_length = (
             non_null.astype(str)
@@ -334,20 +508,29 @@ class DatasetFingerprint:
 
         return "text"
 
+    # ==========================================================
+    # POTENTIAL ID DETECTION
+    # ==========================================================
+
     def _is_potential_id(
         self,
         column_name: str,
         series: pd.Series,
         unique_count: int,
     ) -> bool:
+        """
+        Detect whether a column is likely an identifier.
+        """
 
         row_count = len(series)
 
         if row_count == 0:
             return False
 
-        normalized_name = self._normalize_column_name(
-            column_name
+        normalized_name = (
+            self._normalize_column_name(
+                column_name
+            )
         )
 
         id_keywords = {
@@ -362,11 +545,20 @@ class DatasetFingerprint:
             "uuid",
             "identifier",
             "passengerid",
+            "passenger_id",
+            "account_id",
+            "order_id",
+            "product_id",
+            "item_id",
+            "invoice_id",
+            "ticket_id",
         }
 
+        # Explicit ID-like names
         if normalized_name in id_keywords:
             return True
 
+        # Exact unique sequence is suspicious as ID
         if (
             unique_count == row_count
             and row_count > 10
@@ -375,6 +567,10 @@ class DatasetFingerprint:
 
         return False
 
+    # ==========================================================
+    # TARGET DETECTION
+    # ==========================================================
+
     def _calculate_target_score(
         self,
         column_name: str,
@@ -382,12 +578,19 @@ class DatasetFingerprint:
         unique_count: int,
         potential_id: bool,
     ) -> tuple[int, list]:
+        """
+        Estimate whether a column is a possible ML target.
+
+        This is a heuristic score, NOT a guarantee.
+        """
 
         score = 0
         reasons = []
 
-        normalized_name = self._normalize_column_name(
-            column_name
+        normalized_name = (
+            self._normalize_column_name(
+                column_name
+            )
         )
 
         target_keywords = {
@@ -405,10 +608,13 @@ class DatasetFingerprint:
             "churn",
             "default",
             "survived",
+            "y",
+            "target_value",
+            "target_class",
         }
 
         # --------------------------------------------------
-        # 1. Target-like column name
+        # 1. TARGET-LIKE NAME
         # --------------------------------------------------
 
         if normalized_name in target_keywords:
@@ -424,12 +630,16 @@ class DatasetFingerprint:
                 keyword + "_"
             )
             for keyword in target_keywords
+            if keyword not in {
+                "y",
+            }
         ):
 
             score += 50
 
             reasons.append(
-                "Nama kolom memiliki pola target-like."
+                "Nama kolom memiliki pola "
+                "target-like."
             )
 
         elif any(
@@ -437,16 +647,20 @@ class DatasetFingerprint:
                 "_" + keyword
             )
             for keyword in target_keywords
+            if keyword not in {
+                "y",
+            }
         ):
 
             score += 50
 
             reasons.append(
-                "Nama kolom memiliki pola target-like."
+                "Nama kolom memiliki pola "
+                "target-like."
             )
 
         # --------------------------------------------------
-        # 2. Low cardinality
+        # 2. LOW CARDINALITY
         # --------------------------------------------------
 
         row_count = len(series)
@@ -457,6 +671,7 @@ class DatasetFingerprint:
                 unique_count / row_count
             )
 
+            # Binary classification candidate
             if unique_count == 2:
 
                 score += 25
@@ -466,6 +681,7 @@ class DatasetFingerprint:
                     "cocok untuk binary classification."
                 )
 
+            # Multiclass classification candidate
             elif (
                 3 <= unique_count <= 10
                 and unique_ratio <= 0.05
@@ -478,7 +694,7 @@ class DatasetFingerprint:
                 )
 
         # --------------------------------------------------
-        # 3. Exclude obvious ID
+        # 3. EXCLUDE OBVIOUS ID
         # --------------------------------------------------
 
         if potential_id:
@@ -491,7 +707,7 @@ class DatasetFingerprint:
             )
 
         # --------------------------------------------------
-        # 4. Avoid constant columns
+        # 4. CONSTANT COLUMN
         # --------------------------------------------------
 
         if unique_count <= 1:
@@ -499,19 +715,51 @@ class DatasetFingerprint:
             score -= 100
 
             reasons.append(
-                "Kolom konstan tidak cocok sebagai target."
+                "Kolom konstan tidak cocok "
+                "sebagai target."
             )
 
-        score = max(0, min(score, 100))
+        # --------------------------------------------------
+        # 5. NUMERIC TARGET SUPPORT
+        # --------------------------------------------------
+
+        if pd.api.types.is_numeric_dtype(
+            series
+        ):
+
+            # Numeric columns with enough variation
+            # can be regression targets.
+            if unique_count > 10:
+
+                score += 10
+
+                reasons.append(
+                    "Kolom numerik dengan variasi "
+                    "nilai cukup untuk kandidat regression."
+                )
+
+        score = max(
+            0,
+            min(score, 100),
+        )
 
         return score, reasons
+
+    # ==========================================================
+    # NUMERIC STATISTICS
+    # ==========================================================
 
     def _get_numeric_statistics(
         self,
         series: pd.Series,
     ) -> dict | None:
+        """
+        Generate numeric statistics.
+        """
 
-        if not pd.api.types.is_numeric_dtype(series):
+        if not pd.api.types.is_numeric_dtype(
+            series
+        ):
             return None
 
         clean_series = series.dropna()
@@ -537,18 +785,30 @@ class DatasetFingerprint:
             ),
         }
 
+    # ==========================================================
+    # CATEGORICAL STATISTICS
+    # ==========================================================
+
     def _get_categorical_statistics(
         self,
         series: pd.Series,
     ) -> dict | None:
+        """
+        Generate categorical statistics
+        for low-cardinality non-numeric columns.
+        """
 
         if not (
             isinstance(
                 series.dtype,
                 pd.CategoricalDtype,
             )
-            or pd.api.types.is_object_dtype(series)
-            or pd.api.types.is_string_dtype(series)
+            or pd.api.types.is_object_dtype(
+                series
+            )
+            or pd.api.types.is_string_dtype(
+                series
+            )
         ):
             return None
 
@@ -557,7 +817,9 @@ class DatasetFingerprint:
         if non_null.empty:
             return None
 
-        unique_count = non_null.nunique()
+        unique_count = int(
+            non_null.nunique()
+        )
 
         if unique_count > 20:
             return None
@@ -581,14 +843,22 @@ class DatasetFingerprint:
             )
 
         return {
-            "unique_count": int(unique_count),
+            "unique_count": unique_count,
             "top_values": top_values,
         }
+
+    # ==========================================================
+    # SAFE NUMBER
+    # ==========================================================
 
     def _safe_number(
         self,
         value,
     ):
+        """
+        Convert pandas/numpy numeric values
+        into JSON-safe Python values.
+        """
 
         if pd.isna(value):
             return None
@@ -596,15 +866,31 @@ class DatasetFingerprint:
         if hasattr(value, "item"):
             value = value.item()
 
-        if isinstance(value, float):
-            return round(value, 6)
+        if isinstance(
+            value,
+            float,
+        ):
+            return round(
+                value,
+                6,
+            )
 
         return value
+
+    # ==========================================================
+    # HASH
+    # ==========================================================
 
     def generate_hash(
         self,
         representation: dict,
     ) -> str:
+        """
+        Generate SHA-256 hash from normalized representation.
+
+        Hash digunakan sebagai identitas heuristik,
+        bukan sebagai similarity score.
+        """
 
         normalized = json.dumps(
             representation,
@@ -613,13 +899,22 @@ class DatasetFingerprint:
         )
 
         return hashlib.sha256(
-            normalized.encode("utf-8")
+            normalized.encode(
+                "utf-8"
+            )
         ).hexdigest()
+
+    # ==========================================================
+    # PUBLIC API
+    # ==========================================================
 
     def generate(
         self,
         dataframe: pd.DataFrame,
     ) -> dict:
+        """
+        Generate complete fingerprint.
+        """
 
         representation = (
             self.generate_representation(
@@ -627,8 +922,10 @@ class DatasetFingerprint:
             )
         )
 
-        fingerprint = self.generate_hash(
-            representation
+        fingerprint = (
+            self.generate_hash(
+                representation
+            )
         )
 
         return {

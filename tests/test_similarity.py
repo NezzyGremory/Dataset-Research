@@ -92,11 +92,16 @@ def test_same_dataset_similarity():
         fingerprint,
     )
 
+    print("\n=== SAME DATASET TEST ===")
+    print(result)
+
     assert result["overall_score"] == 100.0
     assert result["schema_similarity"] == 100.0
     assert result["keyword_similarity"] == 100.0
     assert result["target_similarity"] == 100.0
     assert result["size_similarity"] == 100.0
+
+    print("Same dataset similarity: PASSED")
 
 
 def test_different_dataset_similarity():
@@ -119,14 +124,19 @@ def test_different_dataset_similarity():
         fingerprint_b,
     )
 
-    print("\nSimilarity Result:")
+    print("\n=== DIFFERENT DATASET TEST ===")
     print(result)
 
     assert 0 <= result["overall_score"] <= 100
     assert result["overall_score"] < 100
 
-    if __name__ == "__main__":
+    print("Different dataset similarity: PASSED")
+
+
+if __name__ == "__main__":
     test_same_dataset_similarity()
     test_different_dataset_similarity()
 
-    print("\nSemua test similarity berhasil.")
+    print("\n================================")
+    print("Semua test similarity berhasil.")
+    print("================================")
