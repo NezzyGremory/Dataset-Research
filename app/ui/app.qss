@@ -1,0 +1,1136 @@
+/* ============================================================
+   DATASET RESEARCH — MODERN BLUE / WHITE DESKTOP UI
+   ============================================================ */
+
+* {
+    font-family: "Segoe UI";
+}
+
+QMainWindow,
+#appRoot,
+#pageStack,
+#contentContainer {
+    background: #F5F9FF;
+    color: #172033;
+}
+
+QWidget {
+    font-size: 13px;
+    color: #172033;
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+#sidebar {
+    background: #FFFFFF;
+    border: none;
+}
+
+#brandLogo {
+    background: #EAF3FF;
+    border-radius: 10px;
+    color: #FFFFFF;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+#brandTitle {
+    color: #FFFFFF;
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+#brandAccent {
+    color: #4F8CFF;
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+#brandSubtitle {
+    color: #7A8BA3;
+    font-size: 10px;
+    font-weight: 500;
+}
+
+#sectionLabel {
+    color: #6B7A90;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    padding: 6px 8px 5px 8px;
+}
+
+#navButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    min-height: 40px;
+    padding: 0;
+    text-align: left;
+}
+
+#navButton:hover {
+    background: #EEF5FF;
+    border-color: #DCEAFF;
+}
+
+#navButton[active="true"] {
+    background: #E5F1FF;
+    border-color: #CFE3FF;
+}
+
+#navButton:disabled {
+    background: transparent;
+    border-color: transparent;
+}
+
+#navIcon {
+    color: #7B8CA3;
+    font-size: 16px;
+}
+
+#navButton[active="true"] #navIcon {
+    color: #4F8CFF;
+}
+
+#navText {
+    color: #506176;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+#navButton[active="true"] #navText {
+    color: #FFFFFF;
+}
+
+#navButton:disabled #navText,
+#navButton:disabled #navIcon {
+    color: #A9B6C6;
+}
+
+#workspaceStatus {
+    background: #F1F7FF;
+    border: 1px solid #DCE8F7;
+    border-radius: 10px;
+}
+
+#workspaceStatusTitle {
+    color: #6f7d94;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+#workspaceStatusValue {
+    color: #35B779;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+#sidebarFooter {
+    color: #8A98AA;
+    font-size: 9px;
+    line-height: 1.45;
+    padding: 5px 8px 0 8px;
+}
+
+/* ============================================================
+   TOPBAR
+   ============================================================ */
+
+#topbar {
+    background: #FFFFFF;
+    border-bottom: 1px solid #E3ECF7;
+}
+
+#topbarTitle {
+    color: #172033;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+#topbarStatus {
+    background: #EEF6FF;
+    border: 1px solid #D7E8FF;
+    border-radius: 14px;
+    color: #3D78D8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 6px 10px;
+}
+
+/* ============================================================
+   COMMON PAGE TEXT
+   ============================================================ */
+
+#pageTitle {
+    color: #172033;
+    font-size: 22px;
+    font-weight: 750;
+}
+
+#pageSubtitle,
+#pageDescription {
+    color: #64748B;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+#sectionTitle {
+    color: #1B2A41;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+#sectionDescription {
+    color: #7D8CA0;
+    font-size: 11px;
+}
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+
+#contentCard,
+#statCard,
+#currentDatasetCard,
+#quickActionCard,
+#metricCard,
+#researchCard,
+#uploadCard,
+#pipelineCard,
+#pipelineStageCard,
+#heroCard,
+#heroVisual,
+#researchStatus {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 12px;
+}
+
+#contentCard:hover,
+#quickActionCard:hover {
+    border-color: #C9DDF5;
+}
+
+#statCard {
+    min-height: 72px;
+}
+
+#statTitle,
+#metricTitle {
+    color: #7D8CA0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+#statValue,
+#metricValue {
+    color: #172033;
+    font-size: 19px;
+    font-weight: 750;
+}
+
+#statDescription {
+    color: #98a2b1;
+    font-size: 9px;
+}
+
+#cardTitle {
+    color: #1B2A41;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+#cardLabel {
+    color: #59677d;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+#cardDescription,
+#analysisContent {
+    color: #6f7c90;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* ============================================================
+   DASHBOARD HERO
+   ============================================================ */
+
+#heroCard {
+    background: #FFFFFF;
+    border-color: #dfe7f2;
+}
+
+#heroEyebrow {
+    color: #4d83dc;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1.3px;
+}
+
+#heroTitle {
+    color: #152136;
+    font-size: 26px;
+    font-weight: 800;
+    line-height: 1.1;
+}
+
+#heroDescription {
+    color: #69778d;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+#heroButton {
+    background: #4f8cff;
+    border: 1px solid #4f8cff;
+    border-radius: 8px;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 15px;
+}
+
+#heroButton:hover {
+    background: #3e7eea;
+    border-color: #3e7eea;
+}
+
+#heroButton:pressed {
+    background: #326fd4;
+}
+
+#heroVisual {
+    background: #f7faff;
+    border-color: #dce7f6;
+}
+
+#heroVisualTitle {
+    color: #7a879b;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
+#heroWorkflowNumber {
+    color: #4f8cff;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+#heroWorkflowTitle {
+    color: #344158;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* ============================================================
+   QUICK ACTIONS
+   ============================================================ */
+
+#quickActionCard {
+    background: #FFFFFF;
+}
+
+#quickActionCard:hover {
+    background: #fbfdff;
+}
+
+#quickActionIcon {
+    background: #eef5ff;
+    border: 1px solid #D7E8FF;
+    border-radius: 8px;
+    color: #4f8cff;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+#quickActionTitle {
+    color: #202c40;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+#quickActionDescription {
+    color: #7a8799;
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+#quickActionButton {
+    background: transparent;
+    border: none;
+    color: #4f82d6;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 0;
+    text-align: left;
+}
+
+#quickActionButton:hover {
+    color: #2f68bd;
+}
+
+/* ============================================================
+   DATASET STATUS / PIPELINE
+   ============================================================ */
+
+#datasetName {
+    color: #1d293d;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+#datasetDescription {
+    color: #7d899a;
+    font-size: 11px;
+}
+
+#datasetStatusBadge,
+#scoreBadge {
+    background: #f3f6fa;
+    border: 1px solid #e2e7ee;
+    border-radius: 12px;
+    color: #788598;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 5px 9px;
+}
+
+#datasetStatusBadge[state="success"] {
+    background: #eefaf3;
+    border-color: #d2efdd;
+    color: #2d8b55;
+}
+
+#datasetStatusBadge[state="active"] {
+    background: #eef5ff;
+    border-color: #d9e7fb;
+    color: #3d78cc;
+}
+
+#pipelineCard {
+    background: #fbfcfe;
+    border-color: #e2e8f1;
+}
+
+#pipelineStageCard {
+    background: #FFFFFF;
+    border-color: #e1e7ef;
+}
+
+#pipelineStageCard[state="success"] {
+    background: #f4fbf7;
+    border-color: #cfeadb;
+}
+
+#pipelineStageCard[state="active"] {
+    background: #f3f7ff;
+    border-color: #cfe0fb;
+}
+
+#pipelineStageCard[state="future"] {
+    background: #f8f9fb;
+    border-color: #e7eaf0;
+}
+
+#pipelineNumber {
+    color: #4f8cff;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+#pipelineTitle {
+    color: #344158;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+#pipelineStatus {
+    color: #8b96a6;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+
+#pipelineStatus[state="success"] {
+    color: #2d8b55;
+}
+
+#pipelineStatus[state="active"] {
+    color: #3d78cc;
+}
+
+#pipelineStatus[state="future"] {
+    color: #a0a8b5;
+}
+
+#pipelineConnector {
+    color: #b4becd;
+    font-size: 16px;
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+
+#primaryButton {
+    background: #4f8cff;
+    border: 1px solid #4f8cff;
+    border-radius: 8px;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 15px;
+}
+
+#primaryButton:hover {
+    background: #3e7eea;
+    border-color: #3e7eea;
+}
+
+#primaryButton:pressed {
+    background: #326fd4;
+}
+
+#primaryButton:disabled {
+    background: #b8c9e4;
+    border-color: #b8c9e4;
+}
+
+QPushButton {
+    outline: none;
+}
+
+/* ============================================================
+   UPLOAD
+   ============================================================ */
+
+#uploadCard {
+    background: #fbfdff;
+    border: 1px dashed #cdd9e9;
+}
+
+#uploadIcon {
+    color: #4f8cff;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+}
+
+/* ============================================================
+   ANALYSIS / ML / RESEARCH
+   ============================================================ */
+
+#emptyState,
+#errorState {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 12px;
+    color: #778397;
+    font-size: 12px;
+    padding: 30px;
+}
+
+#errorState {
+    background: #fff8f8;
+    border-color: #f0d9d9;
+    color: #a35f5f;
+}
+
+#statusLabel {
+    color: #66748a;
+    font-size: 11px;
+}
+
+#researchStatus {
+    background: #fbfdff;
+}
+
+#metricCard {
+    background: #FFFFFF;
+}
+
+#researchCard {
+    background: #FFFFFF;
+}
+
+/* ============================================================
+   TABLES / LISTS / TEXT AREAS
+   ============================================================
+
+QTableWidget,
+QListWidget,
+QTextEdit {
+    background: #FFFFFF;
+    border: 1px solid #e1e7ef;
+    border-radius: 9px;
+    color: #344158;
+    selection-background-color: #edf4ff;
+    selection-color: #1d2b42;
+}
+
+QTableWidget {
+    gridline-color: #edf0f5;
+}
+
+QHeaderView::section {
+    background: #f7f9fc;
+    border: none;
+    border-bottom: 1px solid #e2e7ef;
+    color: #64748B;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 8px;
+}
+
+QListWidget::item {
+    padding: 7px;
+    border-radius: 6px;
+}
+
+QListWidget::item:hover {
+    background: #f5f8fc;
+}
+
+QListWidget::item:selected {
+    background: #edf4ff;
+    color: #245baf;
+}
+
+QTextEdit {
+    padding: 8px;
+}
+
+/* ============================================================
+   TABS
+   ============================================================ */
+
+QTabWidget::pane {
+    background: #FFFFFF;
+    border: 1px solid #e1e7ef;
+    border-radius: 10px;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background: transparent;
+    border: none;
+    color: #7d899b;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 9px 13px;
+}
+
+QTabBar::tab:hover {
+    color: #4f82d6;
+}
+
+QTabBar::tab:selected {
+    color: #2f6fc7;
+    font-weight: 700;
+    border-bottom: 2px solid #4f8cff;
+}
+
+/* ============================================================
+   INPUTS / COMBOBOX / CHECKBOX
+   ============================================================ */
+
+QLineEdit,
+QComboBox {
+    background: #FFFFFF;
+    border: 1px solid #dce3ed;
+    border-radius: 7px;
+    color: #344158;
+    min-height: 32px;
+    padding: 0 9px;
+}
+
+QLineEdit:focus,
+QComboBox:focus {
+    border-color: #86adf0;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 26px;
+}
+
+QCheckBox {
+    color: #66748a;
+    spacing: 7px;
+}
+
+/* ============================================================
+   PROGRESS BAR
+   ============================================================ */
+
+QProgressBar {
+    background: #e9eef5;
+    border: none;
+    border-radius: 4px;
+    max-height: 7px;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background: #4f8cff;
+    border-radius: 4px;
+}
+
+/* ============================================================
+   SCROLLBARS
+   ============================================================ */
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical {
+    background: #cbd4e0;
+    border-radius: 4px;
+    min-height: 30px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #b5c1d1;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #cbd4e0;
+    border-radius: 4px;
+    min-width: 30px;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+    width: 0;
+}
+
+/* ============================================================
+   TOOLTIP / DIVIDERS
+   ============================================================ */
+
+QToolTip {
+    background: #172033;
+    border: 1px solid #27344a;
+    color: #FFFFFF;
+    padding: 5px 7px;
+}
+
+QFrame[frameShape="4"] {
+    color: #e5e9ef;
+}
+
+
+/* ============================================================
+   POLISHED UI OVERRIDES — LIGHT BLUE EDITION
+   ============================================================ */
+
+QMainWindow {
+    background: #F5F9FF;
+}
+
+QWidget {
+    selection-background-color: #DCEEFF;
+    selection-color: #172033;
+}
+
+#sidebar {
+    background: #FFFFFF;
+    border-right: 1px solid #E1ECF8;
+}
+
+#brandLogo {
+    background: #EAF3FF;
+    border: 1px solid #D6E8FF;
+    border-radius: 12px;
+    color: #4F8CFF;
+}
+
+#brandTitle { color: #172033; }
+#brandAccent { color: #4F8CFF; }
+#brandSubtitle { color: #8A98AA; }
+#sectionLabel { color: #94A3B8; }
+
+#navButton {
+    min-height: 42px;
+    border-radius: 10px;
+    padding-left: 4px;
+}
+
+#navButton:hover {
+    background: #F1F7FF;
+    border-color: #E0EDFB;
+}
+
+#navButton[active="true"] {
+    background: #E8F2FF;
+    border-color: #D5E7FC;
+}
+
+#navText { color: #617187; font-size: 13px; font-weight: 600; }
+#navButton[active="true"] #navText { color: #3577E5; font-weight: 700; }
+#navIcon { color: #8292A7; }
+#navButton[active="true"] #navIcon { color: #4F8CFF; }
+
+#workspaceStatus {
+    background: #F7FBFF;
+    border: 1px solid #DFEBF8;
+    border-radius: 11px;
+}
+
+#workspaceStatusTitle { color: #91A0B2; }
+#workspaceStatusValue { color: #35A86F; }
+#sidebarFooter { color: #A0ACBA; }
+
+#topbar {
+    background: rgba(255,255,255,0.98);
+    border-bottom: 1px solid #E2ECF7;
+}
+
+#topbarTitle { color: #172033; font-size: 16px; font-weight: 700; }
+#topbarStatus {
+    background: #F0F7FF;
+    border: 1px solid #D8E9FC;
+    color: #3979D9;
+}
+
+#contentContainer, #pageStack, #appRoot { background: #F5F9FF; }
+
+#pageTitle { color: #172033; font-size: 25px; font-weight: 750; }
+#pageSubtitle, #pageDescription { color: #718096; font-size: 13px; }
+#sectionTitle { color: #1C2B40; font-size: 16px; font-weight: 700; }
+#sectionDescription { color: #8190A4; font-size: 12px; }
+
+#contentCard, #statCard, #currentDatasetCard, #quickActionCard,
+#metricCard, #researchCard, #uploadCard, #pipelineCard,
+#pipelineStageCard, #heroCard, #heroVisual, #researchStatus {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 14px;
+}
+
+#contentCard:hover, #quickActionCard:hover, #researchCard:hover,
+#currentDatasetCard:hover, #statCard:hover {
+    border-color: #C8DDF5;
+}
+
+#heroCard {
+    background: #FFFFFF;
+    border: 1px solid #D6E7FA;
+}
+
+#heroVisual {
+    background: #F0F7FF;
+    border: 1px solid #D9EAFE;
+}
+
+#heroTitle { color: #172033; font-size: 26px; font-weight: 750; }
+#heroDescription { color: #66768C; font-size: 13px; }
+#heroEyebrow { color: #4F8CFF; font-weight: 700; }
+#heroVisualTitle { color: #2A4E7D; font-weight: 700; }
+#heroWorkflowNumber { color: #4F8CFF; font-weight: 800; }
+#heroWorkflowTitle { color: #52657D; font-weight: 600; }
+
+#primaryButton, #analyzeButton, #runButton, #uploadButton {
+    background: #4F8CFF;
+    color: #FFFFFF;
+    border: 1px solid #4F8CFF;
+    border-radius: 9px;
+    min-height: 40px;
+    padding: 0 16px;
+    font-weight: 700;
+}
+
+#primaryButton:hover, #analyzeButton:hover, #runButton:hover, #uploadButton:hover {
+    background: #3E7EF0;
+    border-color: #3E7EF0;
+}
+
+#primaryButton:pressed, #analyzeButton:pressed, #runButton:pressed, #uploadButton:pressed {
+    background: #3473E1;
+}
+
+#primaryButton:disabled, #analyzeButton:disabled, #runButton:disabled, #uploadButton:disabled {
+    background: #C9D8EC;
+    border-color: #C9D8EC;
+    color: #F8FBFF;
+}
+
+#quickActionButton {
+    background: transparent;
+    border: none;
+    color: #4F8CFF;
+    font-weight: 700;
+    text-align: left;
+    padding: 4px 0;
+}
+#quickActionButton:hover { color: #286CD7; }
+#quickActionIcon { background: #EEF6FF; color: #4F8CFF; border-radius: 9px; }
+#quickActionTitle { color: #20324A; font-size: 14px; font-weight: 700; }
+#quickActionDescription { color: #718096; font-size: 12px; }
+
+#statTitle, #cardLabel, #metricTitle { color: #8492A5; font-size: 11px; font-weight: 700; }
+#statValue, #cardValue, #metricValue { color: #172033; font-size: 22px; font-weight: 750; }
+#statDescription, #cardDescription { color: #8A98AA; font-size: 11px; }
+
+#datasetName { color: #1A2B42; font-size: 15px; font-weight: 700; }
+#datasetDescription { color: #7B8A9D; font-size: 12px; }
+#datasetStatusBadge, #scoreBadge {
+    background: #EAF7F0;
+    border: 1px solid #D3EFDF;
+    color: #2C9B68;
+    border-radius: 10px;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+#pipelineCard { background: #FBFDFF; }
+#pipelineTitle { color: #233750; font-weight: 700; }
+#pipelineNumber { color: #4F8CFF; font-weight: 800; }
+#pipelineStatus { color: #8A98AA; font-size: 10px; font-weight: 700; }
+#pipelineStatus[state="completed"] { color: #35A86F; }
+#pipelineStatus[state="active"] { color: #4F8CFF; }
+#pipelineStatus[state="error"] { color: #E46666; }
+#pipelineConnector { background: #D8E7F8; max-height: 2px; }
+
+#uploadCard {
+    background: #FFFFFF;
+    border: 1px dashed #BFD9F5;
+    min-height: 230px;
+}
+#uploadCard:hover { background: #F8FBFF; border-color: #4F8CFF; }
+#uploadIcon { color: #4F8CFF; background: #EDF6FF; border-radius: 14px; }
+#uploadTitle { color: #20324A; font-size: 18px; font-weight: 700; }
+#uploadDescription { color: #7A899C; font-size: 12px; }
+
+QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {
+    background: #FFFFFF;
+    border: 1px solid #D8E5F3;
+    border-radius: 9px;
+    padding: 8px 10px;
+    color: #25364D;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border-color: #8CB9F0;
+}
+
+QTableWidget, QTableView {
+    background: #FFFFFF;
+    alternate-background-color: #F8FBFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 10px;
+    gridline-color: #E8EFF7;
+}
+QHeaderView::section {
+    background: #F2F7FD;
+    color: #66778D;
+    border: none;
+    border-bottom: 1px solid #DCE8F7;
+    padding: 8px 10px;
+    font-weight: 700;
+}
+
+QTabWidget::pane {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 12px;
+    top: -1px;
+}
+QTabBar::tab {
+    background: transparent;
+    color: #7A899D;
+    padding: 9px 14px;
+    margin-right: 3px;
+    border: none;
+    border-bottom: 2px solid transparent;
+}
+QTabBar::tab:hover { color: #4F8CFF; }
+QTabBar::tab:selected {
+    color: #397BE0;
+    font-weight: 700;
+    border-bottom: 2px solid #4F8CFF;
+}
+
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 4px 1px; }
+QScrollBar::handle:vertical { background: #C9D9EB; border-radius: 4px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: #AFC7E2; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar:horizontal { background: transparent; height: 8px; }
+QScrollBar::handle:horizontal { background: #C9D9EB; border-radius: 4px; }
+
+#analysisContent, #emptyState, #errorState {
+    background: transparent;
+}
+
+#statusLabel { color: #64748B; font-size: 12px; }
+#researchStatus { background: #F7FBFF; border-color: #DCEAF8; }
+#researchStatus QLabel { color: #65768C; }
+
+#researchCard { padding: 2px; }
+#researchCard QLabel { color: #53667D; }
+
+/* Keep long research text readable instead of visually collapsing it. */
+QTextEdit, QPlainTextEdit {
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+QProgressBar {
+    background: #EAF2FB;
+    border: none;
+    border-radius: 4px;
+    text-align: center;
+    height: 7px;
+}
+QProgressBar::chunk {
+    background: #4F8CFF;
+    border-radius: 4px;
+}
+
+
+/* ============================================================
+   DASHBOARD POLISH — HERO / TEXT SPACING
+   ============================================================ */
+#heroCard {
+    min-height: 215px;
+}
+
+#heroTitle {
+    font-size: 24px;
+    line-height: 1.15;
+    padding: 0;
+    margin: 0;
+}
+
+#heroDescription {
+    font-size: 12px;
+    line-height: 1.45;
+    padding: 0;
+    margin: 0;
+}
+
+#heroButton {
+    min-height: 36px;
+    max-height: 36px;
+}
+
+#sectionTitle {
+    font-size: 15px;
+}
+
+#sectionDescription {
+    font-size: 11px;
+}
+
+#quickActionCard {
+    min-height: 126px;
+}
+
+#quickActionTitle {
+    font-size: 11px;
+}
+
+#quickActionDescription {
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+/* ============================================================
+   DASHBOARD CLEAN / COMPACT
+   ============================================================ */
+#heroCard {
+    min-height: 0px;
+    max-height: 178px;
+}
+#heroTitle {
+    font-size: 25px;
+    line-height: 1.08;
+}
+#heroDescription {
+    font-size: 11px;
+    line-height: 1.35;
+}
+#heroVisual {
+    border-radius: 13px;
+}
+#heroWorkflowTitle {
+    font-size: 10px;
+}
+#heroWorkflowNumber {
+    font-size: 9px;
+}
+#sectionTitle {
+    font-size: 15px;
+}
+#quickActionCard {
+    min-height: 0px;
+    max-height: 104px;
+}
+#quickActionCard #quickActionDescription {
+    font-size: 9px;
+    line-height: 1.25;
+}
+#quickActionCard #quickActionTitle {
+    font-size: 11px;
+}
+#quickActionCard #quickActionButton {
+    font-size: 9px;
+}
+#currentDatasetCard {
+    min-height: 0px;
+    max-height: 72px;
+}
+#statCard {
+    min-height: 0px;
+}
+#pipelineCard {
+    min-height: 0px;
+    max-height: 68px;
+}
+#pipelineStageCard {
+    min-height: 0px;
+    max-height: 54px;
+}
+
+
+/* HERO: upload-only layout */
+#heroCard {
+    min-height: 178px;
+}
+
+#heroButton {
+    min-width: 150px;
+    min-height: 38px;
+    padding: 0 18px;
+}
