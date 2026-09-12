@@ -821,17 +821,12 @@ The application then retrieves related publications from supported academic sour
 
 Use the dedicated research tools to continue the workflow:
 
+<<<<<<< HEAD
 - **Papers** — inspect academic publications and ranking signals.
 - **Research Landscape** — inspect the existing research environment and method/topic patterns.
 - **Research Gap** — inspect potential research gaps and opportunities.
 - **Research Report** — review the combined research intelligence in a structured report.
-
----
-
-## 6. Analyze Research Results
-
-Review retrieved papers and examine:
-
+=======
 - Title
 - Authors
 - Abstract
@@ -839,6 +834,30 @@ Review retrieved papers and examine:
 - DOI
 - Citation information
 - Relevance
+>>>>>>> cfa0fc9225425a9b0bec529edd730c27a0e806f7
+
+---
+
+## 6. Analyze Research Results
+
+Review retrieved papers and examine:
+
+<<<<<<< HEAD
+- Title
+- Authors
+- Abstract
+- Publication year
+- DOI
+- Citation information
+- Relevance
+=======
+- Research landscape
+- Research trends
+- Potential research gaps
+- Dataset relationships
+- Topic relationships
+- ML method usage
+>>>>>>> cfa0fc9225425a9b0bec529edd730c27a0e806f7
 
 ---
 
@@ -921,6 +940,7 @@ In particular:
 - [x] Paper deduplication
 - [x] Paper relevance ranking
 - [x] Research intelligence pipeline
+<<<<<<< HEAD
 - [x] Research Landscape
 - [x] Research Trend
 - [x] Potential Research Gap analysis
@@ -929,14 +949,22 @@ In particular:
 - [x] Research Landscape tool
 - [x] Research Gap tool
 - [x] Research Report tool
+=======
+>>>>>>> cfa0fc9225425a9b0bec529edd730c27a0e806f7
 - [x] SQLite local storage
 - [x] PySide6 desktop interface
 - [x] Windows executable build
 
 ## Planned Improvements
 
+<<<<<<< HEAD
 - [ ] Advanced Research Landscape visualization
 - [ ] Advanced Research Gap analysis
+=======
+- [ ] Advanced Research Landscape
+- [ ] Advanced Research Gap Analysis
+- [ ] Research Report Generator
+>>>>>>> cfa0fc9225425a9b0bec529edd730c27a0e806f7
 - [ ] Additional academic data sources
 - [ ] More Machine Learning algorithms
 - [ ] Advanced semantic search
@@ -1007,7 +1035,11 @@ GENERATE A RESEARCH REPORT
 
 **Veranda Ardiyan Putra Pratama**
 
+<<<<<<< HEAD
 Data Science Student  
+=======
+Data Science Student
+>>>>>>> cfa0fc9225425a9b0bec529edd730c27a0e806f7
 **UIN K.H. Abdurrahman Wahid Pekalongan**
 
 ---
