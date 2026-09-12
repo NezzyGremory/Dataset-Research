@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Dict
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QListWidget,
     QListWidgetItem,
+    QLineEdit,
     QProgressBar,
     QHeaderView,
 )
@@ -39,6 +41,17 @@ from app.analyzer.fingerprint import DatasetFingerprint
 from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
 from app.research.intelligence import ResearchIntelligenceEngine
+
+
+def _resource_path(relative_path: str | Path) -> Path:
+    """Return a resource path that works in development and PyInstaller builds."""
+    relative = Path(relative_path)
+
+    if getattr(sys, "frozen", False):
+        # PyInstaller --onefile extracts bundled data under _MEIPASS.
+        return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "app" / "ui" / relative
+
+    return Path(__file__).resolve().parent / relative
 
 
 class StatCard(QFrame):
@@ -372,129 +385,333 @@ class PipelineStage(QFrame):
 
         self.update()
 
+class MiniLineChart(QFrame):
+    """Compact line chart used by the dashboard research snapshot."""
+
+    def __init__(self, title: str, subtitle: str = "", parent=None):
+        super().__init__(parent)
+        self.setObjectName("dashboardChartCard")
+        self._title = title
+        self._subtitle = subtitle
+        self._labels = []
+        self._values = []
+        self.setMinimumHeight(170)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_data(self, labels, values):
+        self._labels = [str(x) for x in labels]
+        self._values = [float(x) for x in values]
+        self.update()
+
+    def clear_data(self):
+        self._labels = []
+        self._values = []
+        self.update()
+
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
+        from PySide6.QtCore import QRectF, QPointF
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+
+        painter.setPen(QColor("#17304E"))
+        title_font = QFont(self.font())
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        painter.setFont(title_font)
+        painter.drawText(16, 22, self._title)
+
+        painter.setPen(QColor("#7C8BA0"))
+        sub_font = QFont(self.font())
+        sub_font.setPointSize(8)
+        painter.setFont(sub_font)
+        painter.drawText(16, 37, self._subtitle)
+
+        chart = QRectF(18, 50, max(40, self.width() - 34), max(70, self.height() - 72))
+        painter.setPen(QPen(QColor("#E8EEF6"), 1))
+        for frac in (0.0, 0.5, 1.0):
+            y = chart.top() + chart.height() * frac
+            painter.drawLine(QPointF(chart.left(), y), QPointF(chart.right(), y))
+
+        if not self._values:
+            painter.setPen(QColor("#A0ADBD"))
+            painter.drawText(chart, Qt.AlignCenter, "Run Academic Research to populate this chart")
+            painter.end()
+            return
+
+        vmax = max(self._values) or 1.0
+        n = len(self._values)
+        points = []
+        for i, value in enumerate(self._values):
+            x = chart.left() if n == 1 else chart.left() + (chart.width() * i / (n - 1))
+            y = chart.bottom() - (value / vmax) * chart.height()
+            points.append(QPointF(x, y))
+
+        pen = QPen(QColor("#4F8CFF"), 2)
+        painter.setPen(pen)
+        for a, b in zip(points, points[1:]):
+            painter.drawLine(a, b)
+
+        painter.setBrush(QBrush(QColor("#4F8CFF")))
+        painter.setPen(Qt.NoPen)
+        for point in points:
+            painter.drawEllipse(point, 3.5, 3.5)
+
+        painter.setPen(QColor("#7C8BA0"))
+        painter.setFont(sub_font)
+        for i, label in enumerate(self._labels):
+            if n == 1:
+                x = chart.left()
+            else:
+                x = chart.left() + chart.width() * i / (n - 1)
+            text = label
+            rect = QRectF(x - 28, chart.bottom() + 3, 56, 15)
+            painter.drawText(rect, Qt.AlignHCenter | Qt.AlignTop, text)
+
+        painter.end()
+
+
+class MiniBarChart(QFrame):
+    """Compact vertical bar chart used by the dashboard research snapshot."""
+
+    def __init__(self, title: str, subtitle: str = "", parent=None):
+        super().__init__(parent)
+        self.setObjectName("dashboardChartCard")
+        self._title = title
+        self._subtitle = subtitle
+        self._labels = []
+        self._values = []
+        self.setMinimumHeight(170)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_data(self, labels, values):
+        self._labels = [str(x) for x in labels]
+        self._values = [float(x) for x in values]
+        self.update()
+
+    def clear_data(self):
+        self._labels = []
+        self._values = []
+        self.update()
+
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
+        from PySide6.QtCore import QRectF
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+
+        painter.setPen(QColor("#17304E"))
+        title_font = QFont(self.font())
+        title_font.setBold(True)
+        title_font.setPointSize(10)
+        painter.setFont(title_font)
+        painter.drawText(16, 22, self._title)
+
+        painter.setPen(QColor("#7C8BA0"))
+        sub_font = QFont(self.font())
+        sub_font.setPointSize(8)
+        painter.setFont(sub_font)
+        painter.drawText(16, 37, self._subtitle)
+
+        chart = QRectF(18, 50, max(40, self.width() - 34), max(70, self.height() - 72))
+        painter.setPen(QPen(QColor("#E8EEF6"), 1))
+        painter.drawLine(chart.left(), chart.bottom(), chart.right(), chart.bottom())
+
+        if not self._values:
+            painter.setPen(QColor("#A0ADBD"))
+            painter.drawText(chart, Qt.AlignCenter, "No research data yet")
+            painter.end()
+            return
+
+        vmax = max(self._values) or 1.0
+        count = len(self._values)
+        slot = chart.width() / max(1, count)
+        bar_width = max(12.0, min(40.0, slot * 0.58))
+
+        painter.setBrush(QBrush(QColor("#77A8FF")))
+        painter.setPen(Qt.NoPen)
+        painter.setFont(sub_font)
+
+        for i, (label, value) in enumerate(zip(self._labels, self._values)):
+            bar_h = (value / vmax) * (chart.height() - 12)
+            x = chart.left() + slot * i + (slot - bar_width) / 2
+            y = chart.bottom() - bar_h
+            painter.drawRoundedRect(QRectF(x, y, bar_width, bar_h), 4, 4)
+
+            painter.setPen(QColor("#718096"))
+            label_rect = QRectF(x - 12, chart.bottom() + 3, bar_width + 24, 24)
+            painter.drawText(label_rect, Qt.AlignHCenter | Qt.AlignTop, label[:10])
+            painter.setPen(Qt.NoPen)
+
+        painter.end()
+
+
 class DashboardPage(QWidget):
 
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.build_ui()
+        self._build_ui()
+        self.update_research_result({})
 
-    def build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 16)
-        layout.setSpacing(10)
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # =================================================
-        # HERO
-        # =================================================
+        scroll = QScrollArea()
+        scroll.setObjectName("dashboardScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(28, 22, 28, 28)
+        layout.setSpacing(16)
+
+        # HERO --------------------------------------------------
         hero = QFrame()
         hero.setObjectName("heroCard")
-        hero.setFixedHeight(178)
+        hero.setMinimumHeight(215)
 
         hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(24, 18, 24, 18)
-        hero_layout.setSpacing(18)
+        hero_layout.setContentsMargins(24, 20, 24, 20)
+        hero_layout.setSpacing(20)
 
-        # Keep the hero left side intentionally minimal.
-        # The previous heading/description could overflow on compact windows.
+        # --------------------------------------------------
+        # HERO BRAND BLOCK
+        # --------------------------------------------------
+        hero_brand = QHBoxLayout()
+        hero_brand.setSpacing(16)
+
+        hero_logo = QLabel()
+        hero_logo.setObjectName("heroLogo")
+        hero_logo.setFixedSize(132, 132)
+        hero_logo.setAlignment(Qt.AlignCenter)
+
+        logo_path = _resource_path("assets/logo.jpg")
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                hero_logo.setPixmap(
+                    pixmap.scaled(
+                        132,
+                        132,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                )
+        else:
+            hero_logo.setText("DR")
+
         hero_text = QVBoxLayout()
-        hero_text.setContentsMargins(0, 0, 0, 0)
-        hero_text.setSpacing(0)
+        hero_text.setSpacing(7)
 
-        start_button = QPushButton("Upload Dataset")
+        hero_title = QLabel("Dataset Research")
+        hero_title.setObjectName("heroTitle")
+
+        hero_description = QLabel(
+            "Analyze your dataset, discover ML methods, and find\n"
+            "relevant academic research in one workspace."
+        )
+        hero_description.setObjectName("heroDescription")
+        hero_description.setWordWrap(True)
+
+        start_button = QPushButton("+  Upload Dataset")
         start_button.setObjectName("heroButton")
-        start_button.setFixedSize(150, 38)
+        start_button.setFixedHeight(38)
+        start_button.setMaximumWidth(170)
         start_button.setCursor(Qt.PointingHandCursor)
         start_button.clicked.connect(self.main_window.open_upload_page)
 
-        # Center the only hero action vertically and horizontally.
-        hero_text.addStretch(1)
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.addStretch(1)
-        button_row.addWidget(start_button)
-        button_row.addStretch(1)
-        hero_text.addLayout(button_row)
-        hero_text.addStretch(1)
+        hero_text.addWidget(hero_title)
+        hero_text.addWidget(hero_description)
+        hero_text.addWidget(start_button)
+        hero_text.addStretch()
 
-        hero_layout.addLayout(hero_text, 1)
+        hero_brand.addWidget(hero_logo)
+        hero_brand.addLayout(hero_text, 1)
+        hero_layout.addLayout(hero_brand, 1)
 
         visual = QFrame()
         visual.setObjectName("heroVisual")
-        visual.setMinimumWidth(245)
-        visual.setMaximumWidth(280)
-
+        visual.setFixedWidth(270)
         visual_layout = QVBoxLayout(visual)
-        visual_layout.setContentsMargins(16, 12, 16, 12)
-        visual_layout.setSpacing(5)
+        visual_layout.setContentsMargins(16, 13, 16, 13)
+        visual_layout.setSpacing(4)
 
         visual_title = QLabel("RESEARCH WORKFLOW")
         visual_title.setObjectName("heroVisualTitle")
         visual_layout.addWidget(visual_title)
 
-        workflow_items = [
+        for number, title in [
             ("01", "Dataset"),
             ("02", "Analysis"),
             ("03", "ML Intelligence"),
             ("04", "Academic Research"),
-        ]
-
-        for number, title in workflow_items:
-            item = QHBoxLayout()
-            item.setSpacing(9)
-
+        ]:
+            row = QHBoxLayout()
+            row.setSpacing(9)
             number_label = QLabel(number)
             number_label.setObjectName("heroWorkflowNumber")
             number_label.setFixedWidth(22)
-
             title_label = QLabel(title)
             title_label.setObjectName("heroWorkflowTitle")
-
-            item.addWidget(number_label)
-            item.addWidget(title_label)
-            item.addStretch()
-            visual_layout.addLayout(item)
+            row.addWidget(number_label)
+            row.addWidget(title_label)
+            row.addStretch()
+            visual_layout.addLayout(row)
 
         visual_layout.addStretch()
         hero_layout.addWidget(visual)
         layout.addWidget(hero)
 
-        # =================================================
-        # QUICK ACTIONS
-        # =================================================
-        quick_header = QLabel("Quick Actions")
-        quick_header.setObjectName("sectionTitle")
-        layout.addWidget(quick_header)
+        # QUICK ACTIONS -----------------------------------------
+        quick_header = QHBoxLayout()
+        quick_title = QLabel("Quick Actions")
+        quick_title.setObjectName("sectionTitle")
+        quick_description = QLabel("Start your research workflow")
+        quick_description.setObjectName("sectionDescription")
+        quick_header.addWidget(quick_title)
+        quick_header.addSpacing(8)
+        quick_header.addWidget(quick_description)
+        quick_header.addStretch()
+        layout.addLayout(quick_header)
 
         actions_layout = QHBoxLayout()
-        actions_layout.setSpacing(10)
-
-        cards = [
-            ("↑", "Upload Dataset", "Import a dataset and start.", self.main_window.open_upload_page),
-            ("◇", "Analyze Dataset", "Explore data quality and patterns.", self.main_window.open_analysis_page),
-            ("✦", "ML Intelligence", "Discover suitable ML methods.", self.main_window.open_ml_page),
-            ("◎", "Academic Research", "Find related papers and gaps.", self.main_window.open_research_page),
-        ]
-
-        for icon, title, description, callback in cards:
-            card = QuickActionCard(icon, title, description, callback)
-            card.setMinimumWidth(0)
-            card.setMinimumHeight(104)
-            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            actions_layout.addWidget(card, 1)
-
+        actions_layout.setSpacing(12)
+        actions_layout.addWidget(QuickActionCard(
+            "↑", "Upload Dataset",
+            "Import a dataset and start a new project.",
+            self.main_window.open_upload_page,
+        ))
+        actions_layout.addWidget(QuickActionCard(
+            "◇", "Analyze Dataset",
+            "Explore statistics, missing values and outliers.",
+            self.main_window.open_analysis_page,
+        ))
+        actions_layout.addWidget(QuickActionCard(
+            "✦", "ML Intelligence",
+            "Discover suitable machine learning methods.",
+            self.main_window.open_ml_page,
+        ))
+        actions_layout.addWidget(QuickActionCard(
+            "◎", "Academic Research",
+            "Find related papers and research opportunities.",
+            self.main_window.open_research_page,
+        ))
         layout.addLayout(actions_layout)
 
-        # =================================================
-        # CURRENT DATASET
-        # =================================================
+        # CURRENT DATASET ---------------------------------------
         dataset_header = QHBoxLayout()
         dataset_title = QLabel("Current Dataset")
         dataset_title.setObjectName("sectionTitle")
-
         self.dataset_status_badge = QLabel("NO DATASET")
         self.dataset_status_badge.setObjectName("datasetStatusBadge")
-
         dataset_header.addWidget(dataset_title)
         dataset_header.addStretch()
         dataset_header.addWidget(self.dataset_status_badge)
@@ -502,55 +719,82 @@ class DashboardPage(QWidget):
 
         dataset_card = QFrame()
         dataset_card.setObjectName("currentDatasetCard")
-        dataset_card.setFixedHeight(72)
-
+        dataset_card.setMinimumHeight(92)
         dataset_layout = QHBoxLayout(dataset_card)
-        dataset_layout.setContentsMargins(16, 10, 16, 10)
-        dataset_layout.setSpacing(14)
+        dataset_layout.setContentsMargins(18, 14, 18, 14)
+        dataset_layout.setSpacing(16)
 
-        dataset_info = QVBoxLayout()
-        dataset_info.setSpacing(2)
-
+        info = QVBoxLayout()
+        info.setSpacing(3)
         self.dataset_name_label = QLabel("No dataset loaded")
         self.dataset_name_label.setObjectName("datasetName")
-
         self.dataset_description_label = QLabel(
             "Upload a dataset to begin your research workflow."
         )
         self.dataset_description_label.setObjectName("datasetDescription")
         self.dataset_description_label.setWordWrap(True)
+        info.addWidget(self.dataset_name_label)
+        info.addWidget(self.dataset_description_label)
+        info.addStretch()
+        dataset_layout.addLayout(info, 1)
 
-        dataset_info.addWidget(self.dataset_name_label)
-        dataset_info.addWidget(self.dataset_description_label)
-        dataset_layout.addLayout(dataset_info, 1)
-
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(8)
-
+        stats = QHBoxLayout()
+        stats.setSpacing(8)
         self.rows_card = StatCard("ROWS", "—", "Records")
         self.columns_card = StatCard("COLUMNS", "—", "Features")
-        self.rows_card.setFixedSize(92, 58)
-        self.columns_card.setFixedSize(92, 58)
-
-        stats_layout.addWidget(self.rows_card)
-        stats_layout.addWidget(self.columns_card)
-        dataset_layout.addLayout(stats_layout)
+        stats.addWidget(self.rows_card)
+        stats.addWidget(self.columns_card)
+        dataset_layout.addLayout(stats)
         layout.addWidget(dataset_card)
 
-        # =================================================
-        # RESEARCH PIPELINE
-        # =================================================
+        # RESEARCH SNAPSHOT -------------------------------------
+        snapshot_header = QHBoxLayout()
+        snapshot_title = QLabel("Research Snapshot")
+        snapshot_title.setObjectName("sectionTitle")
+        snapshot_desc = QLabel("Visual summary of your academic research")
+        snapshot_desc.setObjectName("sectionDescription")
+        snapshot_header.addWidget(snapshot_title)
+        snapshot_header.addSpacing(8)
+        snapshot_header.addWidget(snapshot_desc)
+        snapshot_header.addStretch()
+        layout.addLayout(snapshot_header)
+
+        chart_row = QHBoxLayout()
+        chart_row.setSpacing(12)
+        self.publication_chart = MiniLineChart(
+            "Publication Trend",
+            "Papers by publication year",
+        )
+        self.source_chart = MiniBarChart(
+            "Paper Sources",
+            "Distribution of academic sources",
+        )
+        self.metric_chart = MiniBarChart(
+            "Research Metrics",
+            "Relative magnitude of key outputs",
+        )
+        chart_row.addWidget(self.publication_chart, 1)
+        chart_row.addWidget(self.source_chart, 1)
+        chart_row.addWidget(self.metric_chart, 1)
+        layout.addLayout(chart_row)
+
+        # PIPELINE ----------------------------------------------
+        pipeline_header = QHBoxLayout()
         pipeline_title = QLabel("Research Pipeline")
         pipeline_title.setObjectName("sectionTitle")
-        layout.addWidget(pipeline_title)
+        pipeline_description = QLabel("Track your research progress")
+        pipeline_description.setObjectName("sectionDescription")
+        pipeline_header.addWidget(pipeline_title)
+        pipeline_header.addSpacing(8)
+        pipeline_header.addWidget(pipeline_description)
+        pipeline_header.addStretch()
+        layout.addLayout(pipeline_header)
 
         pipeline_card = QFrame()
         pipeline_card.setObjectName("pipelineCard")
-        pipeline_card.setFixedHeight(68)
-
         pipeline_layout = QHBoxLayout(pipeline_card)
-        pipeline_layout.setContentsMargins(8, 7, 8, 7)
-        pipeline_layout.setSpacing(3)
+        pipeline_layout.setContentsMargins(10, 10, 10, 10)
+        pipeline_layout.setSpacing(4)
 
         pipeline_data = [
             ("Dataset", "Upload"),
@@ -561,21 +805,21 @@ class DashboardPage(QWidget):
             ("Research Gap", "V2"),
             ("Report", "V2"),
         ]
-
         self.pipeline_stages = []
         for index, (title, status) in enumerate(pipeline_data):
             stage = PipelineStage(index + 1, title, status.upper())
             self.pipeline_stages.append(stage)
             pipeline_layout.addWidget(stage, 1)
-
             if index < len(pipeline_data) - 1:
                 connector = QLabel("›")
                 connector.setObjectName("pipelineConnector")
                 connector.setAlignment(Qt.AlignCenter)
                 pipeline_layout.addWidget(connector)
-
         layout.addWidget(pipeline_card)
+
         layout.addStretch()
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
 
     def update_dataset(self, dataframe, filename):
         if dataframe is None:
@@ -585,7 +829,6 @@ class DashboardPage(QWidget):
         self.dataset_description_label.setText(
             "Dataset loaded successfully. Run analysis to generate dataset intelligence."
         )
-
         self.dataset_status_badge.setText("● DATASET LOADED")
         self.dataset_status_badge.setProperty("state", "success")
         style = self.dataset_status_badge.style()
@@ -596,15 +839,97 @@ class DashboardPage(QWidget):
         self.rows_card.set_value(f"{len(dataframe):,}")
         self.columns_card.set_value(f"{len(dataframe.columns):,}")
 
-        if hasattr(self, "pipeline_stages"):
-            if len(self.pipeline_stages) >= 1:
-                self.pipeline_stages[0].set_status("READY", "success")
-            if len(self.pipeline_stages) >= 2:
-                self.pipeline_stages[1].set_status("NEXT", "active")
-            for stage in self.pipeline_stages[2:4]:
-                stage.set_status("WAITING", "waiting")
-            for stage in self.pipeline_stages[4:]:
-                stage.set_status("V2", "future")
+        if len(self.pipeline_stages) >= 1:
+            self.pipeline_stages[0].set_status("READY", "success")
+        if len(self.pipeline_stages) >= 2:
+            self.pipeline_stages[1].set_status("NEXT", "active")
+        for stage in self.pipeline_stages[2:4]:
+            stage.set_status("WAITING", "waiting")
+        for stage in self.pipeline_stages[4:]:
+            stage.set_status("READY", "future")
+
+        self.update_research_result({})
+
+    def update_research_result(self, result):
+        result = result if isinstance(result, dict) else {}
+        papers = result.get("papers", [])
+        if not isinstance(papers, list):
+            papers = []
+
+        # Publication years.
+        year_counts = {}
+        for paper in papers:
+            if not isinstance(paper, dict):
+                continue
+            year = paper.get("year")
+            try:
+                year = int(year)
+            except (TypeError, ValueError):
+                continue
+            if 1900 <= year <= 2100:
+                year_counts[year] = year_counts.get(year, 0) + 1
+        years = sorted(year_counts)
+        if years:
+            self.publication_chart.set_data(
+                years,
+                [year_counts[y] for y in years],
+            )
+        else:
+            self.publication_chart.clear_data()
+
+        # Sources: prefer explicit search summary, otherwise paper source.
+        source_counts = {}
+        search_info = result.get("search", {})
+        if isinstance(search_info, dict):
+            sources = search_info.get("sources", {})
+            if isinstance(sources, dict):
+                for source, count in sources.items():
+                    try:
+                        source_counts[str(source)] = int(count)
+                    except (TypeError, ValueError):
+                        pass
+        if not source_counts:
+            for paper in papers:
+                if not isinstance(paper, dict):
+                    continue
+                source = paper.get("source") or "Unknown"
+                source = str(source)
+                source_counts[source] = source_counts.get(source, 0) + 1
+        top_sources = sorted(source_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        if top_sources:
+            self.source_chart.set_data(
+                [name for name, _ in top_sources],
+                [value for _, value in top_sources],
+            )
+        else:
+            self.source_chart.clear_data()
+
+        # Key metrics as a compact bar chart.
+        summary = result.get("summary", {}) if isinstance(result.get("summary", {}), dict) else {}
+        gaps = result.get("gaps", {}) if isinstance(result.get("gaps", {}), dict) else {}
+        gap_summary = gaps.get("summary", {}) if isinstance(gaps.get("summary", {}), dict) else {}
+        keyword_result = result.get("keywords", {}) if isinstance(result.get("keywords", {}), dict) else {}
+        keywords = keyword_result.get("keywords", [])
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        keyword_count = len(keywords) if isinstance(keywords, list) else 0
+        paper_count = len(papers)
+        gap_count = gap_summary.get("gap_count", 0) or 0
+        relevance = summary.get("top_relevance_score") or 0
+        metrics = [paper_count, keyword_count, gap_count, float(relevance)]
+        labels = ["Papers", "Keywords", "Gaps", "Top Score"]
+        self.metric_chart.set_data(labels, metrics if any(metrics) else [])
+
+        # Pipeline status.
+        if papers:
+            if len(self.pipeline_stages) >= 4:
+                self.pipeline_stages[3].set_status("READY", "success")
+            if len(self.pipeline_stages) >= 5:
+                self.pipeline_stages[4].set_status("READY", "success")
+            if len(self.pipeline_stages) >= 6:
+                self.pipeline_stages[5].set_status("READY", "success")
+            if len(self.pipeline_stages) >= 7:
+                self.pipeline_stages[6].set_status("READY", "success")
 
     def reset_dataset(self):
         self.dataset_name_label.setText("No dataset loaded")
@@ -613,23 +938,20 @@ class DashboardPage(QWidget):
         )
         self.dataset_status_badge.setText("NO DATASET")
         self.dataset_status_badge.setProperty("state", "waiting")
-
         style = self.dataset_status_badge.style()
         style.unpolish(self.dataset_status_badge)
         style.polish(self.dataset_status_badge)
         self.dataset_status_badge.update()
-
         self.rows_card.set_value("—")
         self.columns_card.set_value("—")
-
-        if hasattr(self, "pipeline_stages"):
-            for index, stage in enumerate(self.pipeline_stages):
-                if index == 0:
-                    stage.set_status("UPLOAD", "active")
-                elif index < 4:
-                    stage.set_status("WAITING", "waiting")
-                else:
-                    stage.set_status("V2", "future")
+        for index, stage in enumerate(self.pipeline_stages):
+            if index == 0:
+                stage.set_status("UPLOAD", "active")
+            elif index < 4:
+                stage.set_status("WAITING", "waiting")
+            else:
+                stage.set_status("V2", "future")
+        self.update_research_result({})
 
 class UploadPage(QWidget):
     def __init__(self, main_window):
@@ -3937,6 +4259,9 @@ class ResearchPage(QWidget):
 
         self.gap_text.clear()
 
+        if hasattr(self.main_window, "papers_tool_page"):
+            self.main_window.papers_tool_page.show_empty_state()
+
     # =========================================================
     # RUN RESEARCH
     # =========================================================
@@ -4037,6 +4362,12 @@ class ResearchPage(QWidget):
                 return
 
             self.research_result = result
+
+            self.main_window.dashboard.update_research_result(result)
+
+            self.main_window.papers_tool_page.update_from_result(
+                result
+            )
 
             self._update_status(
                 dataframe,
@@ -4847,6 +5178,1077 @@ class ResearchPage(QWidget):
 
         return ResearchPage._format_section(gaps)
 
+
+class PapersToolPage(QWidget):
+    """
+    Dedicated Research Tool: Papers.
+
+    Uses the already-generated Academic Research result instead of
+    running a second academic search. This keeps the tool lightweight
+    and synchronized with the Academic Research workspace.
+    """
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.papers = []
+        self.filtered_papers = []
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 25, 30, 25)
+        root.setSpacing(16)
+
+        # -----------------------------------------------------
+        # HEADER
+        # -----------------------------------------------------
+
+        header = QHBoxLayout()
+
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(4)
+
+        title = QLabel("Papers")
+        title.setObjectName("pageTitle")
+
+        subtitle = QLabel(
+            "Browse, filter, and inspect papers discovered by Academic Research."
+        )
+        subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
+
+        title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
+
+        header.addLayout(title_layout)
+        header.addStretch()
+
+        self.count_label = QLabel("0 papers")
+        self.count_label.setObjectName("topbarStatus")
+        header.addWidget(self.count_label)
+
+        root.addLayout(header)
+
+        # -----------------------------------------------------
+        # TOOLBAR
+        # -----------------------------------------------------
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText(
+            "Search title, author, keyword, venue, DOI..."
+        )
+        self.search_input.setMinimumHeight(38)
+        self.search_input.textChanged.connect(self._apply_filter)
+
+        toolbar.addWidget(self.search_input, 1)
+
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setObjectName("secondaryButton")
+        self.refresh_button.setMinimumHeight(38)
+        self.refresh_button.clicked.connect(self._refresh_from_research)
+
+        toolbar.addWidget(self.refresh_button)
+
+        root.addLayout(toolbar)
+
+        # -----------------------------------------------------
+        # PAPER TABLE
+        # -----------------------------------------------------
+
+        table_card = QFrame()
+        table_card.setObjectName("researchCard")
+
+        table_layout = QVBoxLayout(table_card)
+        table_layout.setContentsMargins(12, 12, 12, 12)
+        table_layout.setSpacing(8)
+
+        self.paper_table = QTableWidget()
+        self.paper_table.setColumnCount(7)
+        self.paper_table.setHorizontalHeaderLabels(
+            [
+                "#",
+                "Paper",
+                "Year",
+                "Relevance",
+                "Usage",
+                "Source",
+                "Venue",
+            ]
+        )
+        self.paper_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.paper_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.paper_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.paper_table.setAlternatingRowColors(True)
+        self.paper_table.setSortingEnabled(True)
+
+        table_header = self.paper_table.horizontalHeader()
+        table_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        table_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        table_header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+
+        self.paper_table.itemSelectionChanged.connect(
+            self._show_selected_paper
+        )
+        self.paper_table.cellDoubleClicked.connect(
+            self._open_selected_source
+        )
+
+        table_layout.addWidget(self.paper_table, 1)
+        root.addWidget(table_card, 1)
+
+        # -----------------------------------------------------
+        # DETAIL
+        # -----------------------------------------------------
+
+        detail_card = QFrame()
+        detail_card.setObjectName("researchCard")
+
+        detail_layout = QVBoxLayout(detail_card)
+        detail_layout.setContentsMargins(16, 14, 16, 14)
+        detail_layout.setSpacing(8)
+
+        detail_title = QLabel("Paper Details")
+        detail_title.setObjectName("sectionTitle")
+
+        self.paper_detail = QTextEdit()
+        self.paper_detail.setReadOnly(True)
+        self.paper_detail.setMinimumHeight(165)
+        self.paper_detail.setMaximumHeight(220)
+
+        self.open_source_button = QPushButton("Open Paper Source")
+        self.open_source_button.setObjectName("secondaryButton")
+        self.open_source_button.setEnabled(False)
+        self.open_source_button.clicked.connect(self._open_selected_source)
+
+        detail_actions = QHBoxLayout()
+        detail_actions.addStretch()
+        detail_actions.addWidget(self.open_source_button)
+
+        detail_layout.addWidget(detail_title)
+        detail_layout.addWidget(self.paper_detail)
+        detail_layout.addLayout(detail_actions)
+
+        root.addWidget(detail_card)
+
+        self.show_empty_state()
+
+    # =====================================================
+    # STATE
+    # =====================================================
+
+    def show_empty_state(self):
+        self.papers = []
+        self.filtered_papers = []
+        self.paper_table.setSortingEnabled(False)
+        self.paper_table.setRowCount(0)
+        self.paper_table.setSortingEnabled(True)
+        self.paper_detail.setPlainText(
+            "No academic research results available.\n\n"
+            "Run Academic Research first to populate this tool."
+        )
+        self.count_label.setText("0 papers")
+        self.open_source_button.setEnabled(False)
+
+    def update_from_result(self, result):
+        if not isinstance(result, dict):
+            self.show_empty_state()
+            return
+
+        papers = result.get("papers", [])
+        if not isinstance(papers, list):
+            papers = []
+
+        self.papers = [
+            dict(paper)
+            for paper in papers
+            if isinstance(paper, dict)
+        ]
+
+        self._apply_filter()
+
+    def _refresh_from_research(self):
+        result = getattr(
+            self.main_window.research_page,
+            "research_result",
+            {},
+        )
+        self.update_from_result(result)
+
+    # =====================================================
+    # FILTER
+    # =====================================================
+
+    def _apply_filter(self):
+        query = self.search_input.text().strip().lower()
+
+        if not query:
+            self.filtered_papers = list(self.papers)
+        else:
+            filtered = []
+
+            for paper in self.papers:
+                authors = paper.get("authors", [])
+                if isinstance(authors, list):
+                    authors_text = " ".join(str(a) for a in authors)
+                else:
+                    authors_text = str(authors)
+
+                keywords = paper.get("keywords", [])
+                if isinstance(keywords, list):
+                    keywords_text = " ".join(
+                        str(k) for k in keywords
+                    )
+                else:
+                    keywords_text = str(keywords)
+
+                searchable = " ".join(
+                    [
+                        str(paper.get("title", "")),
+                        authors_text,
+                        str(paper.get("venue", "")),
+                        str(paper.get("doi", "")),
+                        keywords_text,
+                        str(paper.get("source", "")),
+                        str(paper.get("year", "")),
+                    ]
+                ).lower()
+
+                if query in searchable:
+                    filtered.append(paper)
+
+            self.filtered_papers = filtered
+
+        self._populate_table()
+
+    # =====================================================
+    # TABLE
+    # =====================================================
+
+    def _populate_table(self):
+        self.paper_table.setSortingEnabled(False)
+        self.paper_table.setRowCount(
+            len(self.filtered_papers)
+        )
+
+        for row, paper in enumerate(self.filtered_papers):
+            relevance = paper.get("relevance_score")
+            usage = paper.get(
+                "dataset_usage_confidence",
+                "UNKNOWN",
+            )
+
+            values = [
+                str(row + 1),
+                str(
+                    paper.get(
+                        "title",
+                        "Untitled",
+                    )
+                ),
+                str(
+                    paper.get("year")
+                    or "-"
+                ),
+                (
+                    f"{relevance:.1f}%"
+                    if isinstance(relevance, (int, float))
+                    else "-"
+                ),
+                str(usage),
+                str(
+                    paper.get(
+                        "source",
+                        "-"
+                    )
+                    or "-"
+                ),
+                str(
+                    paper.get(
+                        "venue",
+                        "-"
+                    )
+                    or "-"
+                ),
+            ]
+
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+
+                # Keep the underlying relevance numeric so sorting
+                # remains useful when the table is manually sorted.
+                if column == 3 and isinstance(
+                    relevance,
+                    (int, float),
+                ):
+                    item.setData(
+                        Qt.UserRole,
+                        float(relevance),
+                    )
+
+                self.paper_table.setItem(
+                    row,
+                    column,
+                    item,
+                )
+
+        self.paper_table.setSortingEnabled(True)
+        self.count_label.setText(
+            f"{len(self.filtered_papers)} of {len(self.papers)} papers"
+        )
+
+        self.paper_detail.clear()
+        self.open_source_button.setEnabled(False)
+
+        if self.filtered_papers:
+            self.paper_table.selectRow(0)
+        else:
+            self.paper_detail.setPlainText(
+                "No papers match the current search."
+            )
+
+    # =====================================================
+    # DETAIL
+    # =====================================================
+
+    def _show_selected_paper(self):
+        rows = self.paper_table.selectionModel().selectedRows()
+
+        if not rows:
+            self.paper_detail.clear()
+            self.open_source_button.setEnabled(False)
+            return
+
+        row = rows[0].row()
+
+        if row < 0 or row >= len(self.filtered_papers):
+            return
+
+        paper = self.filtered_papers[row]
+
+        authors = paper.get("authors", [])
+        if isinstance(authors, list):
+            authors_text = ", ".join(
+                str(author)
+                for author in authors
+            )
+        else:
+            authors_text = str(authors)
+
+        evidence = paper.get(
+            "dataset_usage_evidence",
+            [],
+        )
+        limitations = paper.get(
+            "dataset_usage_limitations",
+            [],
+        )
+
+        lines = [
+            f"TITLE\n{paper.get('title') or '-'}",
+            f"AUTHORS\n{authors_text or '-'}",
+            f"YEAR\n{paper.get('year') or '-'}",
+            f"VENUE\n{paper.get('venue') or '-'}",
+            f"SOURCE\n{paper.get('source') or '-'}",
+            f"DOI\n{paper.get('doi') or '-'}",
+            (
+                "RELEVANCE SCORE\n"
+                + (
+                    f"{paper.get('relevance_score'):.1f}%"
+                    if isinstance(
+                        paper.get("relevance_score"),
+                        (int, float),
+                    )
+                    else "-"
+                )
+            ),
+            (
+                "DATASET USAGE CONFIDENCE\n"
+                f"{paper.get('dataset_usage_confidence') or '-'}"
+            ),
+        ]
+
+        if evidence:
+            lines.append(
+                "EVIDENCE\n"
+                + "\n".join(
+                    f"• {item}"
+                    for item in evidence
+                )
+            )
+
+        if limitations:
+            lines.append(
+                "LIMITATIONS\n"
+                + "\n".join(
+                    f"• {item}"
+                    for item in limitations
+                )
+            )
+
+        abstract = paper.get("abstract")
+        if abstract:
+            lines.append(
+                f"ABSTRACT\n{abstract}"
+            )
+
+        url = paper.get("url")
+        if url:
+            lines.append(
+                f"SOURCE URL\n{url}"
+            )
+
+        self.paper_detail.setPlainText(
+            "\n\n".join(lines)
+        )
+
+        self.open_source_button.setEnabled(
+            bool(url)
+        )
+
+    def _selected_paper(self):
+        rows = self.paper_table.selectionModel().selectedRows()
+
+        if not rows:
+            return None
+
+        row = rows[0].row()
+
+        if row < 0 or row >= len(self.filtered_papers):
+            return None
+
+        return self.filtered_papers[row]
+
+    def _open_selected_source(self):
+        paper = self._selected_paper()
+
+        if not paper:
+            return
+
+        url = paper.get("url")
+
+        if not url:
+            doi = paper.get("doi")
+            if doi:
+                url = f"https://doi.org/{doi}"
+
+        if not url:
+            QMessageBox.information(
+                self,
+                "Source Unavailable",
+                "This paper does not provide a source URL or DOI.",
+            )
+            return
+
+        try:
+            QDesktopServices.openUrl(
+                QUrl(str(url))
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Open Source Failed",
+                f"Unable to open the paper source.\n\n{exc}",
+            )
+
+
+class ResearchLandscapeToolPage(QWidget):
+    """Dedicated Research Tool: Research Landscape.
+
+    Reads the already-generated Academic Research landscape result.
+    No additional academic search is performed here.
+    """
+
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 25, 30, 25)
+        root.setSpacing(16)
+
+        header = QHBoxLayout()
+        title_layout = QVBoxLayout()
+        title = QLabel("Research Landscape")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel(
+            "Explore the methods, topics, and publication structure found in the analyzed literature."
+        )
+        subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
+        title_layout.addWidget(title)
+        title_layout.addWidget(subtitle)
+        header.addLayout(title_layout, 1)
+
+        self.refresh_button = QPushButton("Refresh Landscape")
+        self.refresh_button.setObjectName("primaryButton")
+        self.refresh_button.setMinimumHeight(42)
+        self.refresh_button.setCursor(Qt.PointingHandCursor)
+        self.refresh_button.clicked.connect(self.refresh)
+        header.addWidget(self.refresh_button, 0, Qt.AlignTop)
+        root.addLayout(header)
+
+        self.status_label = QLabel("No academic research result available.")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        self.container = QWidget()
+        self.content = QVBoxLayout(self.container)
+        self.content.setContentsMargins(0, 0, 10, 20)
+        self.content.setSpacing(14)
+        scroll.setWidget(self.container)
+        root.addWidget(scroll, 1)
+
+        self.show_empty_state()
+
+    def _clear(self):
+        while self.content.count():
+            item = self.content.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    def show_empty_state(self):
+        self._clear()
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(28, 36, 28, 36)
+        layout.setSpacing(10)
+
+        title = QLabel("Research Landscape belum tersedia")
+        title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignCenter)
+        desc = QLabel(
+            "Run Academic Research terlebih dahulu.\n"
+            "Setelah literature analysis selesai, hasil landscape akan muncul di sini."
+        )
+        desc.setObjectName("cardDescription")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(desc)
+        self.content.addWidget(card)
+        self.content.addStretch()
+        self.status_label.setText("No academic research result available.")
+
+    def refresh(self):
+        result = getattr(self.main_window.research_page, "research_result", {})
+        if not result:
+            self.show_empty_state()
+            return
+        self.update_from_result(result)
+
+    @staticmethod
+    def _safe_dict(value):
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _pick(mapping, *keys, default=None):
+        for key in keys:
+            value = mapping.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        return default
+
+    @staticmethod
+    def _listify(value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return list(value)
+        if isinstance(value, dict):
+            return list(value.items())
+        return [value]
+
+    @staticmethod
+    def _pretty(value):
+        if isinstance(value, bool):
+            return "Yes" if value else "No"
+        if isinstance(value, float):
+            return f"{value:.2f}"
+        return str(value)
+
+    def _metric_card(self, title, value, subtitle=""):
+        return InfoCard(title, self._pretty(value), subtitle)
+
+    def _add_text_card(self, title, content):
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(8)
+        heading = QLabel(title)
+        heading.setObjectName("sectionTitle")
+        body = QLabel(content)
+        body.setObjectName("cardDescription")
+        body.setWordWrap(True)
+        layout.addWidget(heading)
+        layout.addWidget(body)
+        self.content.addWidget(card)
+
+    def _format_mapping(self, mapping):
+        lines = []
+        for key, value in mapping.items():
+            if isinstance(value, (dict, list, tuple, set)):
+                lines.append(f"{key}: {self._pretty(value)}")
+            else:
+                lines.append(f"{key}: {self._pretty(value)}")
+        return "\n".join(lines)
+
+    def _add_distribution_card(self, title, value):
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+
+        heading = QLabel(title)
+        heading.setObjectName("sectionTitle")
+        layout.addWidget(heading)
+
+        rows = self._listify(value)
+        if not rows:
+            empty = QLabel("No distribution data available.")
+            empty.setObjectName("cardDescription")
+            layout.addWidget(empty)
+        else:
+            for item in rows[:12]:
+                if isinstance(item, tuple) and len(item) == 2:
+                    label, amount = item
+                elif isinstance(item, dict):
+                    label = self._pick(item, "method", "topic", "label", "name", "category", default="Item")
+                    amount = self._pick(item, "percentage", "percent", "confidence", "score", "count", "value", default="-")
+                else:
+                    label = str(item)
+                    amount = ""
+                row = QHBoxLayout()
+                name_label = QLabel(str(label))
+                name_label.setObjectName("cardDescription")
+                value_label = QLabel(self._pretty(amount))
+                value_label.setObjectName("scoreBadge")
+                row.addWidget(name_label, 1)
+                row.addWidget(value_label, 0)
+                layout.addLayout(row)
+
+        self.content.addWidget(card)
+
+    def update_from_result(self, result):
+        self._clear()
+
+        landscape = self._safe_dict(result.get("landscape"))
+        summary = self._safe_dict(landscape.get("summary"))
+
+        papers = result.get("papers", [])
+        if not isinstance(papers, list):
+            papers = []
+
+        paper_count = self._pick(
+            summary,
+            "paper_count", "papers_analyzed", "total_papers", "papers_found",
+            default=len(papers),
+        )
+        dominant_method = self._pick(
+            summary,
+            "dominant_method", "top_method", "most_common_method",
+            default="-",
+        )
+        latest_year = self._pick(
+            summary,
+            "latest_publication_year", "latest_year", "max_year",
+            default="-",
+        )
+
+        self.status_label.setText(
+            f"Landscape loaded from Academic Research • {paper_count} papers analyzed"
+        )
+
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        cards.addWidget(self._metric_card("Papers", paper_count, "Literature analyzed"))
+        cards.addWidget(self._metric_card("Dominant Method", dominant_method, "Most represented method"))
+        cards.addWidget(self._metric_card("Latest Publication", latest_year, "Newest publication year"))
+        self.content.addLayout(cards)
+
+        # Common analyzer field names + generic aliases.
+        methods = self._pick(
+            landscape,
+            "method_distribution", "methods", "method_counts", "top_methods", "dominant_methods",
+        )
+        topics = self._pick(
+            landscape,
+            "topic_distribution", "topics", "topic_counts", "top_topics", "research_topics",
+        )
+        venues = self._pick(
+            landscape,
+            "venue_distribution", "venues", "venue_counts", "top_venues",
+        )
+        years = self._pick(
+            landscape,
+            "publication_years", "year_distribution", "years", "publication_trend",
+        )
+
+        if methods:
+            self._add_distribution_card("Method Distribution", methods)
+        if topics:
+            self._add_distribution_card("Research Topics", topics)
+        if venues:
+            self._add_distribution_card("Publication Venues", venues)
+        if years:
+            self._add_distribution_card("Publication Years", years)
+
+        # Always expose the full structured landscape so no backend field is hidden.
+        if not any((methods, topics, venues, years)):
+            self._add_text_card(
+                "Landscape Analysis",
+                self._format_mapping(landscape) or "No landscape details available.",
+            )
+        else:
+            details = {k: v for k, v in landscape.items() if k not in {
+                "summary", "method_distribution", "methods", "method_counts", "top_methods", "dominant_methods",
+                "topic_distribution", "topics", "topic_counts", "top_topics", "research_topics",
+                "venue_distribution", "venues", "venue_counts", "top_venues",
+                "publication_years", "year_distribution", "years", "publication_trend",
+            }}
+            if details:
+                self._add_text_card("Additional Landscape Details", self._format_mapping(details))
+
+        self.content.addStretch()
+
+
+
+
+class ResearchGapToolPage(QWidget):
+    """Standalone potential research gap explorer."""
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.research_result: Dict[str, Any] = {}
+        self.build_ui()
+
+    def build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 25, 30, 25)
+        root.setSpacing(16)
+
+        header = QHBoxLayout()
+        box = QVBoxLayout()
+        title = QLabel("Research Gap")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Explore potential research directions inferred from the analyzed literature.")
+        subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
+        box.addWidget(title)
+        box.addWidget(subtitle)
+        header.addLayout(box, 1)
+        refresh = QPushButton("Refresh")
+        refresh.setObjectName("primaryButton")
+        refresh.clicked.connect(self.refresh)
+        header.addWidget(refresh)
+        root.addLayout(header)
+
+        self.status = QLabel("No research result available.")
+        self.status.setObjectName("statusLabel")
+        root.addWidget(self.status)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        self.container = QWidget()
+        self.content = QVBoxLayout(self.container)
+        self.content.setContentsMargins(0, 4, 8, 16)
+        self.content.setSpacing(14)
+        scroll.setWidget(self.container)
+        root.addWidget(scroll, 1)
+        self.show_empty_state()
+
+    def clear_content(self):
+        while self.content.count():
+            item = self.content.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    child = item.layout().takeAt(0)
+                    if child.widget():
+                        child.widget().deleteLater()
+
+    def show_empty_state(self):
+        self.research_result = {}
+        self.status.setText("Run Academic Research first to unlock Research Gap.")
+        self.clear_content()
+        card = QFrame()
+        card.setObjectName("contentCard")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(30, 40, 30, 40)
+        title = QLabel("Research Gap belum tersedia")
+        title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignCenter)
+        desc = QLabel("Run Academic Research to analyze potential research gaps from the discovered literature.")
+        desc.setObjectName("cardDescription")
+        desc.setWordWrap(True)
+        desc.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+        lay.addWidget(desc)
+        self.content.addWidget(card)
+        self.content.addStretch()
+
+    def refresh(self):
+        result = getattr(self.main_window.research_page, "research_result", {})
+        if result:
+            self.update_from_result(result)
+        else:
+            self.show_empty_state()
+
+    def update_from_result(self, result):
+        self.research_result = result or {}
+        gaps = self.research_result.get("gaps", {})
+        summary = gaps.get("summary", {}) if isinstance(gaps, dict) else {}
+        items = []
+        if isinstance(gaps, dict):
+            items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        if not isinstance(items, list):
+            items = []
+
+        self.status.setText("Potential research gap analysis loaded from Academic Research.")
+        self.clear_content()
+
+        cards = QHBoxLayout()
+        gap_count = summary.get("gap_count", len(items)) if isinstance(summary, dict) else len(items)
+        conf = summary.get("overall_confidence", summary.get("confidence", "—")) if isinstance(summary, dict) else "—"
+        cards.addWidget(InfoCard("Potential Gaps", str(gap_count), "Detected candidates"))
+        cards.addWidget(InfoCard("Confidence", str(conf), "System estimation"))
+        cards.addWidget(InfoCard("Papers", str(len(self.research_result.get("papers", []))), "Literature analyzed"))
+        self.content.addLayout(cards)
+
+        summary_card = QFrame()
+        summary_card.setObjectName("contentCard")
+        sl = QVBoxLayout(summary_card)
+        st = QLabel("Gap Analysis Summary")
+        st.setObjectName("sectionTitle")
+        sl.addWidget(st)
+        summary_text = ResearchPage._format_section(summary) if summary else "No summary available."
+        sd = QLabel(summary_text)
+        sd.setObjectName("cardDescription")
+        sd.setWordWrap(True)
+        sl.addWidget(sd)
+        self.content.addWidget(summary_card)
+
+        heading = QLabel("Potential Research Directions")
+        heading.setObjectName("sectionTitle")
+        self.content.addWidget(heading)
+
+        if not items:
+            empty = QLabel("No potential research gaps were detected.")
+            empty.setObjectName("emptyState")
+            self.content.addWidget(empty)
+        else:
+            for i, item in enumerate(items, 1):
+                self.content.addWidget(self._gap_card(i, item))
+
+        note = QFrame()
+        note.setObjectName("contentCard")
+        nl = QVBoxLayout(note)
+        nt = QLabel("Interpretation")
+        nt.setObjectName("cardLabel")
+        nd = QLabel(
+            "These are POTENTIAL_GAP candidates produced from the available literature and dataset context. "
+            "They are not definitive scientific claims and should be validated through manual literature review."
+        )
+        nd.setObjectName("cardDescription")
+        nd.setWordWrap(True)
+        nl.addWidget(nt)
+        nl.addWidget(nd)
+        self.content.addWidget(note)
+        self.content.addStretch()
+
+    @staticmethod
+    def _gap_card(index, item):
+        card = QFrame()
+        card.setObjectName("contentCard")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(20, 18, 20, 18)
+        if isinstance(item, dict):
+            title = item.get("title") or item.get("gap") or item.get("description") or "Potential research direction"
+        else:
+            title = str(item)
+        lab = QLabel(f"{index:02d}  {title}")
+        lab.setObjectName("sectionTitle")
+        lab.setWordWrap(True)
+        lay.addWidget(lab)
+        if isinstance(item, dict):
+            for key, value in item.items():
+                if key in {"title", "gap", "description"} or value in (None, "", [], {}):
+                    continue
+                detail = QLabel(f"{ResearchPage._pretty_key(key)}: {ResearchPage._format_value(value)}")
+                detail.setObjectName("cardDescription")
+                detail.setWordWrap(True)
+                lay.addWidget(detail)
+        return card
+
+
+class ResearchReportToolPage(QWidget):
+    """Standalone report preview and HTML export."""
+    def __init__(self, main_window):
+        super().__init__()
+        self.main_window = main_window
+        self.research_result: Dict[str, Any] = {}
+        self.current_html = ""
+        self.build_ui()
+
+    def build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 25, 30, 25)
+        root.setSpacing(16)
+        header = QHBoxLayout()
+        box = QVBoxLayout()
+        title = QLabel("Research Report")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Generate a structured report from the latest Dataset Research analysis.")
+        subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
+        box.addWidget(title)
+        box.addWidget(subtitle)
+        header.addLayout(box, 1)
+
+        self.generate_button = QPushButton("Generate Report")
+        self.generate_button.setObjectName("primaryButton")
+        self.generate_button.clicked.connect(self.generate_preview)
+        header.addWidget(self.generate_button)
+        self.export_button = QPushButton("Export HTML")
+        self.export_button.clicked.connect(self.export_html)
+        self.export_button.setEnabled(False)
+        header.addWidget(self.export_button)
+        root.addLayout(header)
+
+        self.status = QLabel("No research result available.")
+        self.status.setObjectName("statusLabel")
+        root.addWidget(self.status)
+        self.preview = QTextEdit()
+        self.preview.setReadOnly(True)
+        root.addWidget(self.preview, 1)
+        self.show_empty_state()
+
+    def show_empty_state(self):
+        self.research_result = {}
+        self.current_html = ""
+        self.status.setText("Run Academic Research first to generate a report.")
+        self.preview.setPlainText("Research Report belum tersedia.\n\nRun Academic Research terlebih dahulu.")
+        self.export_button.setEnabled(False)
+
+    def update_from_result(self, result):
+        self.research_result = result or {}
+        self.generate_preview()
+
+    def refresh_from_main(self):
+        self.research_result = getattr(self.main_window.research_page, "research_result", {}) or {}
+
+    def generate_preview(self):
+        if not self.research_result:
+            self.refresh_from_main()
+        if not self.research_result:
+            self.show_empty_state()
+            return
+        self.preview.setPlainText(self._build_report_text(self.research_result))
+        self.current_html = self._build_report_html(self.research_result)
+        self.status.setText("Report generated from the latest Academic Research result.")
+        self.export_button.setEnabled(True)
+
+    def export_html(self):
+        if not self.current_html:
+            self.generate_preview()
+        if not self.current_html:
+            return
+        filename = Path(self.main_window._current_filename()).stem or "dataset"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Research Report", f"{filename}_research_report.html", "HTML Files (*.html)"
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.current_html, encoding="utf-8")
+            QMessageBox.information(self, "Report Exported", f"Research report saved to:\n{path}")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    @staticmethod
+    def _build_report_text(result):
+        summary = result.get("summary", {})
+        keywords = result.get("keywords", {})
+        domain = result.get("domain", {})
+        papers = result.get("papers", [])
+        landscape = result.get("landscape", {})
+        trend = result.get("trend", {})
+        gaps = result.get("gaps", {})
+        lines = [
+            "DATASET RESEARCH REPORT",
+            "=" * 80,
+            "",
+            "RESEARCH SUMMARY",
+            ResearchPage._format_section(summary),
+            "",
+            "KEYWORDS",
+            ResearchPage._format_section(keywords),
+            "",
+            "RESEARCH DOMAIN",
+            ResearchPage._format_section(domain),
+            "",
+            f"ACADEMIC PAPERS ({len(papers)})",
+        ]
+        for i, paper in enumerate(papers[:10], 1):
+            lines.append(
+                f"{i}. {paper.get('title', 'Untitled')} | {paper.get('year') or '-'} | "
+                f"Relevance {ResearchPage._format_value(paper.get('relevance_score'))}"
+            )
+        lines.extend([
+            "",
+            "RESEARCH LANDSCAPE",
+            ResearchPage._format_section(landscape),
+            "",
+            "RESEARCH TREND",
+            ResearchPage._format_section(trend),
+            "",
+            "POTENTIAL RESEARCH GAP",
+            ResearchPage._format_gap(gaps),
+            "",
+            "TRANSPARENCY",
+            ResearchPage._format_section(result.get("transparency", {})),
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_report_html(result):
+        import html
+        text = ResearchReportToolPage._build_report_text(result)
+        escaped = html.escape(text)
+        return (
+            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Dataset Research Report</title>"
+            "<style>body{font-family:Segoe UI,Arial,sans-serif;background:#f5f8fc;"
+            "color:#1f2937;margin:0;padding:36px}main{max-width:1000px;margin:auto;"
+            "background:#fff;padding:36px;border-radius:16px;box-shadow:0 8px 30px rgba(15,23,42,.08)}"
+            "h1{color:#2563eb}pre{white-space:pre-wrap;font-family:Consolas,monospace;"
+            "line-height:1.55}</style></head><body><main><h1>Dataset Research Report</h1>"
+            f"<pre>{escaped}</pre></main></body></html>"
+        )
+
 class MainWindow(QMainWindow):
     """Main application window for Dataset Research.
 
@@ -4934,6 +6336,10 @@ class MainWindow(QMainWindow):
         self.analysis_page = AnalysisPage(self)
         self.ml_page = MLIntelligencePage(self)
         self.research_page = ResearchPage(self)
+        self.papers_tool_page = PapersToolPage(self)
+        self.landscape_tool_page = ResearchLandscapeToolPage(self)
+        self.gap_tool_page = ResearchGapToolPage(self)
+        self.report_tool_page = ResearchReportToolPage(self)
 
         self.pages = {
             "dashboard": self.dashboard,
@@ -4941,6 +6347,10 @@ class MainWindow(QMainWindow):
             "analysis": self.analysis_page,
             "ml": self.ml_page,
             "research": self.research_page,
+            "papers": self.papers_tool_page,
+            "landscape": self.landscape_tool_page,
+            "gap": self.gap_tool_page,
+            "report": self.report_tool_page,
         }
 
         for page in self.pages.values():
@@ -4952,6 +6362,10 @@ class MainWindow(QMainWindow):
             "analysis": "Dataset Analysis",
             "ml": "ML Intelligence",
             "research": "Academic Research",
+            "papers": "Papers",
+            "landscape": "Research Landscape",
+            "gap": "Research Gap",
+            "report": "Research Report",
         }
 
         self.open_dashboard()
@@ -4977,7 +6391,7 @@ class MainWindow(QMainWindow):
         logo.setFixedSize(44, 44)
         logo.setAlignment(Qt.AlignCenter)
 
-        logo_path = Path(__file__).resolve().parent / "assets" / "logo.jpg"
+        logo_path = _resource_path("assets/logo.jpg")
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
             if not pixmap.isNull():
@@ -5032,18 +6446,19 @@ class MainWindow(QMainWindow):
         tools.setObjectName("sectionLabel")
         layout.addWidget(tools)
 
-        for key, icon, text in [
-            ("papers", "○", "Papers"),
-            ("landscape", "○", "Research Landscape"),
-            ("gap", "○", "Research Gap"),
-            ("report", "○", "Research Report"),
+        for key, icon, text, enabled in [
+            ("papers", "▤", "Papers", True),
+            ("landscape", "▥", "Research Landscape", True),
+            ("gap", "◇", "Research Gap", True),
+            ("report", "▰", "Research Report", True),
         ]:
             self._add_nav_button(
                 layout,
                 key,
                 icon,
                 text,
-                enabled=False,
+                enabled=enabled,
+                tool_item=True,
             )
 
         layout.addStretch()
@@ -5070,10 +6485,11 @@ class MainWindow(QMainWindow):
 
         return sidebar
 
-    def _add_nav_button(self, layout, key, icon, text, enabled=True):
+    def _add_nav_button(self, layout, key, icon, text, enabled=True, tool_item=False):
         button = QPushButton()
         button.setObjectName("navButton")
         button.setEnabled(enabled)
+        button.setProperty("toolItem", bool(tool_item))
         button.setCursor(
             Qt.PointingHandCursor if enabled else Qt.ArrowCursor
         )
@@ -5103,6 +6519,10 @@ class MainWindow(QMainWindow):
             "analysis": self.open_analysis_page,
             "ml": self.open_ml_page,
             "research": self.open_research_page,
+            "papers": self.open_papers_tool,
+            "landscape": self.open_landscape_tool,
+            "gap": self.open_gap_tool,
+            "report": self.open_report_tool,
         }
 
         if key in callbacks:
@@ -5168,6 +6588,38 @@ class MainWindow(QMainWindow):
             self.research_page.show_empty_state()
         self._show_page("research")
 
+    def open_papers_tool(self):
+        if not self.analysis_result or not self.research_page.research_result:
+            self.papers_tool_page.show_empty_state()
+        else:
+            self.papers_tool_page.update_from_result(
+                self.research_page.research_result
+            )
+        self._show_page("papers")
+
+    def open_landscape_tool(self):
+        if not self.analysis_result or not self.research_page.research_result:
+            self.landscape_tool_page.show_empty_state()
+        else:
+            self.landscape_tool_page.update_from_result(
+                self.research_page.research_result
+            )
+        self._show_page("landscape")
+
+    def open_gap_tool(self):
+        if not self.analysis_result or not self.research_page.research_result:
+            self.gap_tool_page.show_empty_state()
+        else:
+            self.gap_tool_page.update_from_result(self.research_page.research_result)
+        self._show_page("gap")
+
+    def open_report_tool(self):
+        if not self.analysis_result or not self.research_page.research_result:
+            self.report_tool_page.show_empty_state()
+        else:
+            self.report_tool_page.update_from_result(self.research_page.research_result)
+        self._show_page("report")
+
     def _current_filename(self):
         if self.current_file_path:
             try:
@@ -5206,6 +6658,10 @@ class MainWindow(QMainWindow):
 
         self.ml_page.show_empty_state()
         self.research_page.show_empty_state()
+        self.papers_tool_page.show_empty_state()
+        self.landscape_tool_page.show_empty_state()
+        self.gap_tool_page.show_empty_state()
+        self.report_tool_page.show_empty_state()
 
     # =========================================================
     # DATASET ANALYSIS
@@ -5248,5 +6704,9 @@ __all__ = [
     "MethodDetailCard",
     "MLIntelligencePage",
     "ResearchPage",
+    "PapersToolPage",
+    "ResearchLandscapeToolPage",
+    "ResearchGapToolPage",
+    "ResearchReportToolPage",
     "MainWindow",
 ]

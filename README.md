@@ -10,40 +10,72 @@ The application combines **dataset analysis, Machine Learning intelligence, NLP,
 
 Instead of only analyzing a dataset, Dataset Research helps users understand:
 
-* What is inside the dataset?
-* What problems exist in the data?
-* What Machine Learning methods may be suitable?
-* What previous research has been conducted?
-* How relevant are existing academic papers?
-* What research opportunities may be explored further?
+- What is inside the dataset?
+- What problems exist in the data?
+- What Machine Learning methods may be suitable?
+- What previous research has been conducted?
+- How relevant are existing academic papers?
+- What research opportunities may be explored further?
 
 ---
 
 # Preview
 
-### Dashboard
+The application provides a complete research workflow from dataset upload to research reporting.
+
+### 1. Dashboard
+
+The main workspace provides an overview of the dataset research workflow, quick actions, current dataset status, research pipeline, and research tools.
 
 ![Dataset Research Dashboard](screenshots/1.png)
 
-### Dataset Upload
+### 2. Dataset Upload
+
+The Dataset Upload page is used to load a CSV dataset into the workspace before starting the analysis workflow.
 
 ![Dataset Upload](screenshots/2.png)
 
-### Dataset Analysis
+### 3. Dataset Analysis
+
+The Dataset Analysis page presents dataset structure, statistics, missing values, duplicates, outliers, correlations, and dataset fingerprint information.
 
 ![Dataset Analysis](screenshots/3.png)
 
-### ML Intelligence
+### 4. ML Intelligence
+
+The ML Intelligence page estimates the possible Machine Learning task and recommends suitable algorithms based on dataset characteristics.
 
 ![ML Intelligence](screenshots/4.png)
 
-### Academic Research
+### 5. Academic Research
+
+Academic Research connects the analyzed dataset with relevant academic literature using generated research queries and research intelligence.
 
 ![Academic Research](screenshots/5.png)
 
-### Research Results
+### 6. Papers
 
-![Research Results](screenshots/6.png)
+The Papers research tool provides access to ranked academic papers discovered during the research process, including paper relevance and metadata.
+
+![Papers](screenshots/6.png)
+
+### 7. Research Landscape
+
+The Research Landscape tool summarizes the existing research environment, including methods, topics, publication patterns, and other landscape signals.
+
+![Research Landscape](screenshots/7.png)
+
+### 8. Research Gap
+
+The Research Gap tool presents **potential research gaps** and research opportunities inferred from the collected literature and dataset context.
+
+![Research Gap](screenshots/8.png)
+
+### 9. Research Report
+
+The Research Report tool brings the research findings together into a structured report covering the dataset, ML intelligence, academic literature, landscape, trends, and potential research gaps.
+
+![Research Report](screenshots/9.png)
 
 ---
 
@@ -89,6 +121,8 @@ RELEVANCE RANKING
        ↓
 RESEARCH LANDSCAPE
        ↓
+RESEARCH TREND
+       ↓
 POTENTIAL RESEARCH GAP
        ↓
 RESEARCH REPORT
@@ -108,16 +142,16 @@ Dataset Research analyzes the structure and characteristics of an uploaded datas
 
 Features include:
 
-* Dataset loading
-* Dataset profiling
-* Number of rows and columns
-* Data type detection
-* Missing-value analysis
-* Duplicate detection
-* Descriptive statistics
-* Outlier detection
-* Correlation analysis
-* Dataset fingerprinting
+- Dataset loading
+- Dataset profiling
+- Number of rows and columns
+- Data type detection
+- Missing-value analysis
+- Duplicate detection
+- Descriptive statistics
+- Outlier detection
+- Correlation analysis
+- Dataset fingerprinting
 
 The original dataset is not modified during the analysis process.
 
@@ -129,10 +163,10 @@ Dataset Research analyzes dataset characteristics to determine possible Machine 
 
 Supported task categories include:
 
-* Classification
-* Regression
-* Clustering
-* Anomaly Detection
+- Classification
+- Regression
+- Clustering
+- Anomaly Detection
 
 The system can then provide recommendations for suitable Machine Learning methods.
 
@@ -144,34 +178,34 @@ The system can then provide recommendations for suitable Machine Learning method
 
 Examples of supported methods:
 
-* Logistic Regression
-* Decision Tree
-* Random Forest
-* Support Vector Machine
-* K-Nearest Neighbors
-* Naive Bayes
-* Gradient Boosting
-* XGBoost
+- Logistic Regression
+- Decision Tree
+- Random Forest
+- Support Vector Machine
+- K-Nearest Neighbors
+- Naive Bayes
+- Gradient Boosting
+- XGBoost
 
 ## Regression
 
 Examples include:
 
-* Linear Regression
-* Ridge Regression
-* Lasso Regression
-* Decision Tree Regressor
-* Random Forest Regressor
-* Gradient Boosting Regressor
-* XGBoost Regressor
+- Linear Regression
+- Ridge Regression
+- Lasso Regression
+- Decision Tree Regressor
+- Random Forest Regressor
+- Gradient Boosting Regressor
+- XGBoost Regressor
 
 ## Clustering
 
 Examples include:
 
-* K-Means
-* DBSCAN
-* Agglomerative Clustering
+- K-Means
+- DBSCAN
+- Agglomerative Clustering
 
 ## Evaluation Metrics
 
@@ -179,18 +213,18 @@ Depending on the detected Machine Learning task, appropriate evaluation metrics 
 
 ### Classification
 
-* Accuracy
-* Precision
-* Recall
-* F1-Score
-* ROC-AUC
+- Accuracy
+- Precision
+- Recall
+- F1-Score
+- ROC-AUC
 
 ### Regression
 
-* MAE
-* MSE
-* RMSE
-* R²
+- MAE
+- MSE
+- RMSE
+- R²
 
 The recommended method is an **analytical recommendation**, not an absolute decision. The final algorithm should be selected and evaluated by the researcher.
 
@@ -202,18 +236,82 @@ One of the main features of Dataset Research is its ability to search academic l
 
 Research queries can be generated using information such as:
 
-* Dataset keywords
-* Dataset characteristics
-* Research domain
-* Machine Learning task
-* Recommended ML methods
+- Dataset keywords
+- Dataset characteristics
+- Research domain
+- Machine Learning task
+- Recommended ML methods
 
 Academic literature can be retrieved from:
 
-* OpenAlex
-* Crossref
+- OpenAlex
+- Crossref
 
 The retrieved papers can then be processed, deduplicated, analyzed, and ranked.
+
+---
+
+# Research Tools
+
+Dataset Research provides dedicated research tools that build on the results of the Academic Research pipeline.
+
+## Papers
+
+The Papers tool provides a focused view of academic publications collected by the research pipeline.
+
+It can be used to inspect information such as:
+
+- Paper title
+- Authors
+- Abstract
+- Publication year
+- DOI
+- Venue
+- Citation count
+- Source
+- Keywords
+- Relevance score
+
+## Research Landscape
+
+The Research Landscape tool summarizes the research environment around the current dataset or research topic.
+
+It can help identify:
+
+- Common research topics
+- Frequently used ML methods
+- Publication patterns
+- Dominant methods
+- Related academic studies
+
+## Research Gap
+
+The Research Gap tool highlights **potential** research opportunities based on the available literature and detected research patterns.
+
+Potential signals may include:
+
+- Underexplored combinations of topics and methods
+- Limited research around certain dataset characteristics
+- Different approaches used by previous studies
+- Emerging research trends
+- Areas with fewer related publications
+
+## Research Report
+
+The Research Report tool brings the available research intelligence into a structured report.
+
+The report can summarize:
+
+- Dataset overview
+- Keywords
+- Research domain
+- ML task and recommended methods
+- Academic paper findings
+- Research landscape
+- Research trends
+- Potential research gaps
+
+Research results remain analytical and should be validated by the researcher.
 
 ---
 
@@ -221,15 +319,15 @@ The retrieved papers can then be processed, deduplicated, analyzed, and ranked.
 
 Academic papers can contain information such as:
 
-* Title
-* Authors
-* Abstract
-* Publication year
-* DOI
-* Venue
-* Citation count
-* Source
-* Keywords
+- Title
+- Authors
+- Abstract
+- Publication year
+- DOI
+- Venue
+- Citation count
+- Source
+- Keywords
 
 This information is used to determine how relevant a paper may be to the current dataset and research context.
 
@@ -241,13 +339,13 @@ Dataset Research can compare dataset characteristics with academic literature.
 
 The matching process may consider:
 
-* Dataset similarity
-* Topic similarity
-* Research domain
-* Machine Learning methods
-* Keywords
-* Semantic similarity
-* Paper relevance
+- Dataset similarity
+- Topic similarity
+- Research domain
+- Machine Learning methods
+- Keywords
+- Semantic similarity
+- Paper relevance
 
 Similarity scores are treated as **analytical signals**.
 
@@ -261,11 +359,11 @@ Natural Language Processing is used to help connect datasets with academic liter
 
 The project can use:
 
-* Keyword extraction
-* TF-IDF
-* Text embeddings
-* Semantic similarity
-* Research-domain detection
+- Keyword extraction
+- TF-IDF
+- Text embeddings
+- Semantic similarity
+- Research-domain detection
 
 These techniques help transform dataset and research information into searchable and comparable representations.
 
@@ -277,11 +375,11 @@ The Research Landscape component provides an overview of existing research aroun
 
 It can help identify:
 
-* Common research topics
-* Frequently used ML methods
-* Research trends
-* Related academic studies
-* Areas with relatively limited coverage
+- Common research topics
+- Frequently used ML methods
+- Research trends
+- Related academic studies
+- Areas with relatively limited coverage
 
 ---
 
@@ -291,11 +389,11 @@ Dataset Research can assist researchers in exploring potential research gaps.
 
 Potential signals may include:
 
-* Underexplored combinations of topics and methods
-* Limited research around certain dataset characteristics
-* Different approaches used by previous studies
-* Emerging research trends
-* Areas with fewer related publications
+- Underexplored combinations of topics and methods
+- Limited research around certain dataset characteristics
+- Different approaches used by previous studies
+- Emerging research trends
+- Areas with fewer related publications
 
 Research gaps generated by the system are **potential opportunities**, not definitive academic conclusions.
 
@@ -311,11 +409,11 @@ Statistical analysis is used to understand the structure and quality of the data
 
 Examples:
 
-* Descriptive statistics
-* Missing-value analysis
-* Duplicate detection
-* Outlier detection
-* Correlation analysis
+- Descriptive statistics
+- Missing-value analysis
+- Duplicate detection
+- Outlier detection
+- Correlation analysis
 
 ---
 
@@ -325,11 +423,11 @@ Dataset fingerprinting creates a compact representation of the dataset character
 
 The fingerprint can contain information such as:
 
-* Dataset dimensions
-* Column characteristics
-* Data types
-* Numerical/categorical composition
-* Statistical characteristics
+- Dataset dimensions
+- Column characteristics
+- Data types
+- Numerical/categorical composition
+- Statistical characteristics
 
 This information can later be used during research matching.
 
@@ -349,13 +447,13 @@ The system attempts to identify the general research domain represented by a dat
 
 Possible domains include:
 
-* Education
-* Healthcare
-* Finance
-* Transportation
-* Business
-* Social Science
-* Technology
+- Education
+- Healthcare
+- Finance
+- Transportation
+- Business
+- Social Science
+- Technology
 
 The detected domain is an inference and should be validated by the researcher.
 
@@ -403,11 +501,11 @@ Retrieved academic papers are ranked using multiple relevance signals.
 
 Possible signals include:
 
-* Keyword similarity
-* Topic similarity
-* Dataset similarity
-* ML method similarity
-* Publication information
+- Keyword similarity
+- Topic similarity
+- Dataset similarity
+- ML method similarity
+- Publication information
 
 ---
 
@@ -415,10 +513,10 @@ Possible signals include:
 
 Semantic similarity can be used to compare textual information such as:
 
-* Dataset descriptions
-* Research topics
-* Paper abstracts
-* Keywords
+- Dataset descriptions
+- Research topics
+- Paper abstracts
+- Keywords
 
 Semantic similarity should be interpreted as a **similarity measure**, not proof of research equivalence.
 
@@ -445,7 +543,7 @@ Semantic similarity should be interpreted as a **similarity measure**, not proof
            ↓
 ┌──────────────────────┐
 │ Research Domain      │
-│ Detection             │
+│ Detection            │
 └──────────┬───────────┘
            ↓
 ┌──────────────────────┐
@@ -476,6 +574,10 @@ Semantic similarity should be interpreted as a **similarity measure**, not proof
            ↓
 ┌──────────────────────┐
 │   Research Landscape │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│    Research Trend    │
 └──────────┬───────────┘
            ↓
 ┌──────────────────────┐
@@ -569,11 +671,6 @@ Dataset-Research/
 │   │
 │   ├── ui/
 │   │   ├── main_window.py
-│   │   ├── dashboard.py
-│   │   ├── upload_page.py
-│   │   ├── analysis_page.py
-│   │   ├── ml_page.py
-│   │   ├── research_page.py
 │   │   ├── app.qss
 │   │   └── assets/
 │   │       └── logo.jpg
@@ -586,14 +683,16 @@ Dataset-Research/
 │   ├── 3.png
 │   ├── 4.png
 │   ├── 5.png
-│   └── 6.png
+│   ├── 6.png
+│   ├── 7.png
+│   ├── 8.png
+│   └── 9.png
 │
 ├── tests/
-│
 ├── config/
-│
 ├── requirements.txt
 ├── run.py
+├── build_dataset_research.bat
 ├── README.md
 └── Dataset Research.spec
 ```
@@ -641,16 +740,19 @@ python run.py
 
 Dataset Research can be packaged as a Windows application using **PyInstaller**.
 
-After building the application:
+For the project build, the repository includes:
 
 ```text
-dist/
-└── Dataset Research/
-    ├── Dataset Research.exe
-    └── ...
+build_dataset_research.bat
 ```
 
-The executable allows users to run the desktop application without manually starting the Python source code.
+The build configuration also includes the application logo resource:
+
+```text
+app/ui/assets/logo.jpg
+```
+
+After building the application, the executable can be found under the generated `dist/` directory according to the selected PyInstaller configuration.
 
 ---
 
@@ -676,14 +778,14 @@ Open:
 
 Review information such as:
 
-* Dataset dimensions
-* Column information
-* Data types
-* Missing values
-* Duplicate records
-* Outliers
-* Statistics
-* Correlations
+- Dataset dimensions
+- Column information
+- Data types
+- Missing values
+- Duplicate records
+- Outliers
+- Statistics
+- Correlations
 
 ---
 
@@ -695,11 +797,11 @@ Open:
 
 Review:
 
-* Detected ML task
-* Target column
-* Recommended algorithms
-* Algorithm descriptions
-* Evaluation metrics
+- Detected ML task
+- Target column
+- Recommended algorithms
+- Algorithm descriptions
+- Evaluation metrics
 
 ---
 
@@ -715,30 +817,28 @@ The application then retrieves related publications from supported academic sour
 
 ---
 
-## 5. Analyze Research Results
+## 5. Explore Research Tools
 
-Review retrieved papers and examine:
+Use the dedicated research tools to continue the workflow:
 
-* Title
-* Authors
-* Abstract
-* Publication year
-* DOI
-* Citation information
-* Relevance
+- **Papers** — inspect academic publications and ranking signals.
+- **Research Landscape** — inspect the existing research environment and method/topic patterns.
+- **Research Gap** — inspect potential research gaps and opportunities.
+- **Research Report** — review the combined research intelligence in a structured report.
 
 ---
 
-## 6. Explore Research Opportunities
+## 6. Analyze Research Results
 
-Use the research intelligence pipeline to explore:
+Review retrieved papers and examine:
 
-* Research landscape
-* Research trends
-* Potential research gaps
-* Dataset relationships
-* Topic relationships
-* ML method usage
+- Title
+- Authors
+- Abstract
+- Publication year
+- DOI
+- Citation information
+- Relevance
 
 ---
 
@@ -787,14 +887,14 @@ The results should be interpreted as analytical recommendations.
 
 In particular:
 
-* ML recommendations are not guaranteed to be optimal.
-* Semantic similarity does not prove research equivalence.
-* Potential research gaps must be verified against the original literature.
-* Academic papers should be read and evaluated by the researcher.
-* Outliers should not automatically be removed.
-* The original dataset should remain unchanged.
-* Internet access is required for academic literature searches.
-* Local dataset analysis can operate independently from academic search services.
+- ML recommendations are not guaranteed to be optimal.
+- Semantic similarity does not prove research equivalence.
+- Potential research gaps must be verified against the original literature.
+- Academic papers should be read and evaluated by the researcher.
+- Outliers should not automatically be removed.
+- The original dataset should remain unchanged.
+- Internet access is required for academic literature searches.
+- Local dataset analysis can operate independently from academic search services.
 
 ---
 
@@ -802,40 +902,47 @@ In particular:
 
 ## Core Features
 
-* [x] Dataset loading
-* [x] Dataset profiling
-* [x] Statistical analysis
-* [x] Missing-value analysis
-* [x] Duplicate detection
-* [x] Outlier detection
-* [x] Correlation analysis
-* [x] Dataset fingerprinting
-* [x] Keyword extraction
-* [x] Research domain detection
-* [x] ML task detection
-* [x] ML method recommendation
-* [x] ML method information
-* [x] Academic paper search
-* [x] OpenAlex integration
-* [x] Crossref integration
-* [x] Paper deduplication
-* [x] Paper relevance ranking
-* [x] Research intelligence pipeline
-* [x] SQLite local storage
-* [x] PySide6 desktop interface
-* [x] Windows executable build
+- [x] Dataset loading
+- [x] Dataset profiling
+- [x] Statistical analysis
+- [x] Missing-value analysis
+- [x] Duplicate detection
+- [x] Outlier detection
+- [x] Correlation analysis
+- [x] Dataset fingerprinting
+- [x] Keyword extraction
+- [x] Research domain detection
+- [x] ML task detection
+- [x] ML method recommendation
+- [x] ML method information
+- [x] Academic paper search
+- [x] OpenAlex integration
+- [x] Crossref integration
+- [x] Paper deduplication
+- [x] Paper relevance ranking
+- [x] Research intelligence pipeline
+- [x] Research Landscape
+- [x] Research Trend
+- [x] Potential Research Gap analysis
+- [x] Research Tools sidebar
+- [x] Papers tool
+- [x] Research Landscape tool
+- [x] Research Gap tool
+- [x] Research Report tool
+- [x] SQLite local storage
+- [x] PySide6 desktop interface
+- [x] Windows executable build
 
-## Planned Features
+## Planned Improvements
 
-* [ ] Advanced Research Landscape
-* [ ] Advanced Research Gap Analysis
-* [ ] Research Report Generator
-* [ ] Additional academic data sources
-* [ ] More Machine Learning algorithms
-* [ ] Advanced semantic search
-* [ ] Improved data visualization
-* [ ] Project export/import
-* [ ] Advanced experiment evaluation
+- [ ] Advanced Research Landscape visualization
+- [ ] Advanced Research Gap analysis
+- [ ] Additional academic data sources
+- [ ] More Machine Learning algorithms
+- [ ] Advanced semantic search
+- [ ] Improved data visualization
+- [ ] Project export/import
+- [ ] Advanced experiment evaluation
 
 ---
 
@@ -851,13 +958,13 @@ python -m pytest tests/ -v
 
 Research intelligence components include tests for:
 
-* Paper model
-* Paper deduplication
-* Relevance ranking
-* Research intelligence
-* Research landscape
-* Research gap analysis
-* Research trend analysis
+- Paper model
+- Paper deduplication
+- Relevance ranking
+- Research intelligence
+- Research landscape
+- Research gap analysis
+- Research trend analysis
 
 ---
 
@@ -865,12 +972,12 @@ Research intelligence components include tests for:
 
 Dataset Research was developed as a practical **Data Science portfolio project** to explore how:
 
-* Data Analysis
-* Machine Learning
-* Natural Language Processing
-* Academic Search
-* Semantic Similarity
-* Research Intelligence
+- Data Analysis
+- Machine Learning
+- Natural Language Processing
+- Academic Search
+- Semantic Similarity
+- Research Intelligence
 
 can be combined into a single desktop application.
 
@@ -885,7 +992,11 @@ UNDERSTAND POSSIBLE ML TASKS
    ↓
 EXPLORE EXISTING RESEARCH
    ↓
-IDENTIFY RESEARCH OPPORTUNITIES
+UNDERSTAND THE RESEARCH LANDSCAPE
+   ↓
+EXPLORE POTENTIAL RESEARCH GAPS
+   ↓
+GENERATE A RESEARCH REPORT
 ```
 
 ---
@@ -894,7 +1005,9 @@ IDENTIFY RESEARCH OPPORTUNITIES
 
 **Abdul Muhis**
 
-Data Science Student
+**Veranda Ardiyan Putra Pratama**
+
+Data Science Student  
 **UIN K.H. Abdurrahman Wahid Pekalongan**
 
 ---

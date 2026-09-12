@@ -109,7 +109,7 @@ QWidget {
 
 #navButton:disabled #navText,
 #navButton:disabled #navIcon {
-    color: #A9B6C6;
+    color: #3577E5;
 }
 
 #workspaceStatus {
@@ -796,9 +796,9 @@ QWidget {
     border-color: #D5E7FC;
 }
 
-#navText { color: #617187; font-size: 13px; font-weight: 600; }
+#navText { color: #3577E5; font-size: 13px; font-weight: 600; }
 #navButton[active="true"] #navText { color: #3577E5; font-weight: 700; }
-#navIcon { color: #8292A7; }
+#navIcon { color: #4F8CFF; }
 #navButton[active="true"] #navIcon { color: #4F8CFF; }
 
 #workspaceStatus {
@@ -1124,13 +1124,39 @@ QProgressBar::chunk {
 }
 
 
-/* HERO: upload-only layout */
-#heroCard {
-    min-height: 178px;
+/* Research Tools: active blue navigation style. */
+#navButton[toolItem="true"] #navIcon {
+    color: #4F8CFF;
+    font-size: 15px;
+    font-weight: 700;
+}
+#navButton[toolItem="true"] #navText {
+    color: #3577E5;
+    font-size: 12px;
+    font-weight: 650;
+}
+#navButton[toolItem="true"]:hover {
+    background: #EEF5FF;
+    border-color: #CFE3FF;
+}
+#navButton[toolItem="true"][active="true"] {
+    background: #E5F1FF;
+    border-color: #CFE3FF;
+}
+#navButton[toolItem="true"][active="true"] #navIcon,
+#navButton[toolItem="true"][active="true"] #navText {
+    color: #2F6FD8;
 }
 
-#heroButton {
-    min-width: 150px;
-    min-height: 38px;
-    padding: 0 18px;
+/* Dashboard research snapshot charts. */
+#dashboardChartCard {
+    background: #FFFFFF;
+    border: 1px solid #DCE7F5;
+    border-radius: 12px;
+}
+#dashboardChartCard:hover {
+    border-color: #C7DCF6;
+}
+#dashboardScroll {
+    background: transparent;
 }
