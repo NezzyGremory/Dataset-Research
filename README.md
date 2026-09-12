@@ -1007,6 +1007,8 @@ GENERATE A RESEARCH REPORT
 
 **Veranda Ardiyan Putra Pratama**
 
+**Nabil Surya Al Hakim**
+
 Data Science Student  
 **UIN K.H. Abdurrahman Wahid Pekalongan**
 
