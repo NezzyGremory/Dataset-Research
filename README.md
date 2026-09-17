@@ -1003,7 +1003,7 @@ GENERATE A RESEARCH REPORT
 
 # Author
 
-**Abdul Muhis**
+**Abdul Muhiss**
 
 **Veranda Ardiyan Putra Pratama**
 

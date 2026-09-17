@@ -189,7 +189,7 @@ class AnalysisPage(QWidget):
             self.main_window.current_dataset
         )
 
-        if dataframe is None:
+        if dataframe is None :
 
             self.show_empty_state()
 
