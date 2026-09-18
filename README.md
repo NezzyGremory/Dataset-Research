@@ -1003,11 +1003,7 @@ GENERATE A RESEARCH REPORT
 
 # Author
 
-**Abdul Muhiss**
-
-**Veranda Ardiyan Putra Pratama**
-
-**Nabil Surya Al Hakim**
+**Abdul Muhis**
 
 Data Science Student  
 **UIN K.H. Abdurrahman Wahid Pekalongan**
