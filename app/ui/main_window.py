@@ -40,6 +40,7 @@ from app.analyzer.correlations import CorrelationAnalyzer
 from app.analyzer.fingerprint import DatasetFingerprint
 from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
+from app.ml.intelligence import MLIntelligenceEngine
 from app.research.intelligence import ResearchIntelligenceEngine
 
 
@@ -1466,33 +1467,12 @@ class AnalysisPage(QWidget):
 
         self.clear_results()
 
-        profile = result.get(
-            "profile"
-        )
-
-        statistics = result.get(
-            "statistics"
-        )
-
-        missing_values = result.get(
-            "missing_values"
-        )
-
-        duplicates = result.get(
-            "duplicates"
-        )
-
-        outliers = result.get(
-            "outliers"
-        )
-
-        correlations = result.get(
-            "correlations"
-        )
-
-        fingerprint = result.get(
-            "fingerprint"
-        )
+        profile = result.get("profile") or {}
+        statistics = result.get("statistics") or []
+        missing_values = result.get("missing_values") or []
+        duplicates = result.get("duplicates") or {}
+        outliers = result.get("outliers") or []
+        correlations = result.get("correlations")
 
         # =================================================
         # OVERVIEW
@@ -1500,29 +1480,25 @@ class AnalysisPage(QWidget):
 
         self.add_section(
             "Dataset Overview",
-            str(profile)
+            self.format_profile(profile)
         )
 
         # =================================================
-        # STATISTICS
+        # COLUMN STATISTICS
         # =================================================
 
         self.add_section(
             "Column Statistics",
-            self.format_collection(
-                statistics
-            )
+            self.format_statistics(statistics)
         )
 
         # =================================================
-        # MISSING
+        # MISSING VALUES
         # =================================================
 
         self.add_section(
             "Missing Values",
-            self.format_collection(
-                missing_values
-            )
+            self.format_missing(missing_values)
         )
 
         # =================================================
@@ -1531,7 +1507,7 @@ class AnalysisPage(QWidget):
 
         self.add_section(
             "Duplicates",
-            str(duplicates)
+            self.format_duplicates(duplicates)
         )
 
         # =================================================
@@ -1540,9 +1516,7 @@ class AnalysisPage(QWidget):
 
         self.add_section(
             "Outliers",
-            self.format_collection(
-                outliers
-            )
+            self.format_outliers(outliers)
         )
 
         # =================================================
@@ -1551,22 +1525,19 @@ class AnalysisPage(QWidget):
 
         self.add_section(
             "Correlation Analysis",
-            str(correlations)
+            self.format_correlations(correlations)
         )
 
         # =================================================
         # FINGERPRINT
         # =================================================
 
+        fingerprint = result.get("fingerprint")
         if fingerprint:
-
             fingerprint_text = (
-                f"SHA-256:\n"
-                f"{fingerprint.get('fingerprint', '—')}\n\n"
-                f"Representation:\n"
-                f"{fingerprint.get('representation', '—')}"
+                f"Fingerprint dataset tersedia.\n"
+                f"SHA-256: {fingerprint.get('fingerprint', '—')}"
             )
-
             self.add_section(
                 "Dataset Fingerprint",
                 fingerprint_text
@@ -1575,8 +1546,205 @@ class AnalysisPage(QWidget):
         self.result_layout.addStretch()
 
     # =====================================================
-    # SECTION
+    # HUMAN-READABLE ANALYSIS
     # =====================================================
+
+    @staticmethod
+    def _number(value, default=0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _fmt_number(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+        if number.is_integer():
+            return f"{int(number):,}"
+        return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+    @classmethod
+    def format_profile(cls, profile):
+        if not isinstance(profile, dict):
+            return "Informasi dataset tidak tersedia."
+
+        rows = profile.get("rows", profile.get("row_count", 0))
+        columns = profile.get("columns", profile.get("column_count", 0))
+        numeric = profile.get("numeric_columns", profile.get("numeric_features", 0))
+        categorical = profile.get("categorical_columns", profile.get("categorical_features", 0))
+        datetime = profile.get("datetime_columns", profile.get("datetime_features", 0))
+        missing = profile.get("missing_values", profile.get("missing_count", 0))
+        duplicates = profile.get("duplicate_rows", profile.get("duplicate_count", 0))
+
+        lines = [
+            f"{cls._fmt_number(rows)} baris dan {cls._fmt_number(columns)} kolom.",
+            f"{cls._fmt_number(numeric)} kolom numerik dan {cls._fmt_number(categorical)} kolom kategorikal."
+        ]
+
+        if cls._number(datetime) > 0:
+            lines.append(f"{cls._fmt_number(datetime)} kolom bertipe tanggal/waktu.")
+
+        missing_n = cls._number(missing)
+        duplicate_n = cls._number(duplicates)
+
+        lines.append(
+            f"{cls._fmt_number(missing_n)} nilai kosong ditemukan."
+            if missing_n > 0
+            else "Tidak ada nilai kosong."
+        )
+        lines.append(
+            f"{cls._fmt_number(duplicate_n)} baris duplikat ditemukan."
+            if duplicate_n > 0
+            else "Tidak ada baris duplikat."
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    def format_statistics(cls, statistics):
+        if not isinstance(statistics, (list, tuple)) or not statistics:
+            return "Statistik kolom belum tersedia."
+
+        lines = []
+        for item in statistics:
+            if not isinstance(item, dict):
+                continue
+
+            name = item.get("column", item.get("name", "Kolom"))
+            dtype = str(item.get("dtype", item.get("semantic_type", ""))).lower()
+            missing = cls._number(item.get("missing_count", 0))
+            unique = item.get("unique_count")
+            numeric = item.get("numeric_statistics") or {}
+
+            parts = [str(name)]
+
+            if "numeric" in dtype or numeric:
+                parts.append("numerik")
+                if "min" in numeric and "max" in numeric:
+                    parts.append(
+                        f"rentang {cls._fmt_number(numeric['min'])}–{cls._fmt_number(numeric['max'])}"
+                    )
+                if "mean" in numeric:
+                    parts.append(f"rata-rata {cls._fmt_number(numeric['mean'])}")
+            else:
+                if dtype:
+                    parts.append(dtype)
+
+            if unique is not None:
+                parts.append(f"{cls._fmt_number(unique)} nilai unik")
+
+            if missing > 0:
+                percentage = cls._number(item.get("missing_percentage", 0))
+                parts.append(
+                    f"{cls._fmt_number(missing)} kosong ({percentage:.1f}%)"
+                )
+
+            lines.append(" — ".join(parts[:1]) + (" — " + " | ".join(parts[1:]) if len(parts) > 1 else ""))
+
+        return "\n".join(lines) if lines else "Statistik kolom belum tersedia."
+
+    @classmethod
+    def format_missing(cls, missing_values):
+        if not isinstance(missing_values, (list, tuple)):
+            return "Informasi nilai kosong tidak tersedia."
+
+        items = []
+        for item in missing_values:
+            if not isinstance(item, dict):
+                continue
+            count = cls._number(item.get("missing_count", item.get("count", 0)))
+            if count <= 0:
+                continue
+            name = item.get("column", item.get("name", "Kolom"))
+            percentage = cls._number(item.get("missing_percentage", item.get("percentage", 0)))
+            items.append(f"{name} — {cls._fmt_number(count)} kosong ({percentage:.1f}%)")
+
+        if not items:
+            return "Tidak ada nilai kosong."
+        return "\n".join(items)
+
+    @classmethod
+    def format_duplicates(cls, duplicates):
+        if not isinstance(duplicates, dict):
+            return "Informasi duplikat tidak tersedia."
+        count = cls._number(duplicates.get("duplicate_count", duplicates.get("count", 0)))
+        percentage = cls._number(duplicates.get("duplicate_percentage", duplicates.get("percentage", 0)))
+        if count <= 0:
+            return "Tidak ada baris duplikat (0 baris)."
+        return f"{cls._fmt_number(count)} baris duplikat ({percentage:.1f}%)."
+
+    @classmethod
+    def format_outliers(cls, outliers):
+        if not isinstance(outliers, (list, tuple)):
+            return "Informasi outlier tidak tersedia."
+
+        items = []
+        for item in outliers:
+            if not isinstance(item, dict):
+                continue
+            count = cls._number(item.get("outlier_count", item.get("count", 0)))
+            if count <= 0:
+                continue
+            name = item.get("column", item.get("name", "Kolom"))
+            percentage = cls._number(item.get("outlier_percentage", item.get("percentage", 0)))
+            items.append(f"{name} — {cls._fmt_number(count)} outlier ({percentage:.1f}%)")
+
+        if not items:
+            return "Tidak ditemukan outlier (0)."
+        return "\n".join(items)
+
+    @classmethod
+    def format_correlations(cls, correlations):
+        if correlations is None:
+            return "Analisis korelasi tidak tersedia."
+
+        # Matrix pandas/DataFrame-like
+        if hasattr(correlations, "columns") and hasattr(correlations, "iloc"):
+            try:
+                pairs = []
+                columns = list(correlations.columns)
+                for i, left in enumerate(columns):
+                    for j in range(i + 1, len(columns)):
+                        right = columns[j]
+                        value = float(correlations.iloc[i, j])
+                        if value == value:
+                            pairs.append((abs(value), left, right, value))
+                pairs.sort(reverse=True)
+                if not pairs:
+                    return "Tidak ada hubungan numerik yang dapat dibandingkan."
+                lines = [
+                    f"{left} ↔ {right}: {value:.2f}"
+                    for _, left, right, value in pairs[:5]
+                ]
+                return "Hubungan paling kuat:\n" + "\n".join(lines)
+            except Exception:
+                pass
+
+        # Nested mapping
+        if isinstance(correlations, dict):
+            pairs = []
+            for left, values in correlations.items():
+                if not isinstance(values, dict):
+                    continue
+                for right, value in values.items():
+                    if str(left) >= str(right):
+                        continue
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    pairs.append((abs(numeric), left, right, numeric))
+            pairs.sort(reverse=True)
+            if pairs:
+                return "Hubungan paling kuat:\n" + "\n".join(
+                    f"{left} ↔ {right}: {value:.2f}"
+                    for _, left, right, value in pairs[:5]
+                )
+
+        return "Data korelasi tersedia, tetapi belum dapat diringkas otomatis."
 
     def add_section(
         self,
@@ -1965,8 +2133,19 @@ class MethodCard(QFrame):
             0,
         )
 
+        score_type = method.get(
+            "score_type",
+        )
+
+        if score_type == "f1_score":
+            score_text = f"F1 {float(score):.2f}%"
+        elif score_type == "r2_score":
+            score_text = f"R² {float(score):.4f}"
+        else:
+            score_text = f"{score}% match"
+
         score_label = QLabel(
-            f"{score}% match"
+            score_text
         )
 
         score_label.setObjectName(
@@ -2378,8 +2557,15 @@ class MLIntelligencePage(QWidget):
             MethodRecommender()
         )
 
+        # Empirical engine: actual model training + validation happens here.
+        self.intelligence_engine = MLIntelligenceEngine(
+            recommender=self.recommender,
+            task_detector=self.detector,
+        )
+
         self.last_task_result = {}
         self.last_method_result = {}
+        self.last_intelligence_result = {}
 
         self.build_ui()
 
@@ -2608,57 +2794,82 @@ class MLIntelligencePage(QWidget):
             "fingerprint"
         )
 
-        if not fingerprint:
+        dataframe = getattr(
+            self.main_window,
+            "current_dataset",
+            None,
+        )
+
+        if not fingerprint or dataframe is None:
 
             self.show_empty_state()
 
             return
 
+        self.refresh_button.setEnabled(False)
+        self.refresh_button.setText("Analyzing...")
+
         try:
 
             # ------------------------------------------------
-            # ML TASK DETECTION
+            # EMPIRICAL ML INTELLIGENCE
             # ------------------------------------------------
-
-            result = self.detector.detect(
-                fingerprint
+            # Task detection is still based on dataset structure, but the
+            # final method ranking now comes from real model evaluation.
+            intelligence_result = self.intelligence_engine.analyze(
+                dataframe=dataframe,
+                fingerprint=fingerprint,
+                evaluate_models=True,
             )
+
+            self.last_intelligence_result = intelligence_result
+
+            if intelligence_result.get("status") == "ERROR":
+                self.show_error(
+                    "Gagal melakukan ML Intelligence:\n"
+                    f"{intelligence_result.get('message', 'Unknown error')}"
+                )
+                return
+
+            # Keep the existing display contract intact. The appearance of
+            # the page does not change; only the data feeding the cards does.
+            task_result = intelligence_result.get(
+                "task_detection",
+                {},
+            )
+
+            result = dict(task_result)
+            result["dataset"] = intelligence_result.get(
+                "dataset",
+                self.extract_dataset_info(
+                    analysis_result,
+                    fingerprint,
+                ),
+            )
+
+            evaluation = intelligence_result.get(
+                "evaluation",
+                {},
+            )
+
+            if evaluation.get("message"):
+                result["message"] = evaluation.get("message")
 
             self.last_task_result = result
 
-            # ------------------------------------------------
-            # DATASET METADATA
-            # ------------------------------------------------
-
-            dataset_info = self.extract_dataset_info(
-                analysis_result,
-                fingerprint,
+            method_result = intelligence_result.get(
+                "recommendation",
+                {
+                    "recommendations": [],
+                    "recommendation_count": 0,
+                },
             )
 
-            # ------------------------------------------------
-            # ADD DATASET INFORMATION
-            # ------------------------------------------------
-
-            result["dataset"] = dataset_info
-
-            # ------------------------------------------------
-            # METHOD RECOMMENDATION
-            # ------------------------------------------------
-
-            method_result = (
-                self.recommender.recommend(
-                    result
-                )
-            )
-
-            self.last_method_result = (
-                method_result
-            )
+            self.last_method_result = method_result
 
             # ------------------------------------------------
             # DISPLAY
             # ------------------------------------------------
-
             self.display_result(
                 result,
                 method_result,
@@ -2670,6 +2881,10 @@ class MLIntelligencePage(QWidget):
                 "Gagal melakukan ML Intelligence:\n"
                 f"{exc}"
             )
+
+        finally:
+            self.refresh_button.setEnabled(True)
+            self.refresh_button.setText("Analyze ML")
 
     # ======================================================
     # DATASET INFORMATION
@@ -3054,9 +3269,8 @@ class MLIntelligencePage(QWidget):
         )
 
         recommendation_description = QLabel(
-            "Ranking berikut merupakan recommendation score "
-            "berdasarkan ML task dan karakteristik dataset. "
-            "Score ini bukan accuracy atau hasil training model."
+            "Ranking berikut berdasarkan hasil training dan validation "
+            "model pada dataset ini. Metric utama ditampilkan pada setiap card."
         )
 
         recommendation_description.setObjectName(
