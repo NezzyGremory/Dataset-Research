@@ -1,3 +1,5 @@
 PySide6
 pandas
 python-dotenv
+httpx
+scikit-learn

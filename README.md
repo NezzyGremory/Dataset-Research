@@ -1005,8 +1005,6 @@ GENERATE A RESEARCH REPORT
 
 **Abdul Muhis**
 
-**Veranda Ardiyan Putra Pratama**
-
 Data Science Student  
 **UIN K.H. Abdurrahman Wahid Pekalongan**
 
