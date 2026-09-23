@@ -42,6 +42,7 @@ from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
 from app.ml.intelligence import MLIntelligenceEngine
 from app.research.intelligence import ResearchIntelligenceEngine
+from app.ui.dataset_search_page import DatasetSearchPage
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -6550,6 +6551,7 @@ class MainWindow(QMainWindow):
         self.analysis_page = AnalysisPage(self)
         self.ml_page = MLIntelligencePage(self)
         self.research_page = ResearchPage(self)
+        self.dataset_search_page = DatasetSearchPage(self)
         self.papers_tool_page = PapersToolPage(self)
         self.landscape_tool_page = ResearchLandscapeToolPage(self)
         self.gap_tool_page = ResearchGapToolPage(self)
@@ -6561,6 +6563,7 @@ class MainWindow(QMainWindow):
             "analysis": self.analysis_page,
             "ml": self.ml_page,
             "research": self.research_page,
+            "dataset_search": self.dataset_search_page,
             "papers": self.papers_tool_page,
             "landscape": self.landscape_tool_page,
             "gap": self.gap_tool_page,
@@ -6576,6 +6579,7 @@ class MainWindow(QMainWindow):
             "analysis": "Dataset Analysis",
             "ml": "ML Intelligence",
             "research": "Academic Research",
+            "dataset_search": "Dataset Search",
             "papers": "Papers",
             "landscape": "Research Landscape",
             "gap": "Research Gap",
@@ -6653,6 +6657,7 @@ class MainWindow(QMainWindow):
         self._add_nav_button(layout, "analysis", "◇", "Analysis")
         self._add_nav_button(layout, "ml", "✦", "ML Intelligence")
         self._add_nav_button(layout, "research", "◎", "Academic Research")
+        self._add_nav_button(layout, "dataset_search", "⌕", "Dataset Search")
 
         layout.addSpacing(18)
 
@@ -6733,6 +6738,7 @@ class MainWindow(QMainWindow):
             "analysis": self.open_analysis_page,
             "ml": self.open_ml_page,
             "research": self.open_research_page,
+            "dataset_search": self.open_dataset_search_page,
             "papers": self.open_papers_tool,
             "landscape": self.open_landscape_tool,
             "gap": self.open_gap_tool,
@@ -6801,6 +6807,9 @@ class MainWindow(QMainWindow):
         if self.current_dataset is None or not self.analysis_result:
             self.research_page.show_empty_state()
         self._show_page("research")
+
+    def open_dataset_search_page(self):
+        self._show_page("dataset_search")
 
     def open_papers_tool(self):
         if not self.analysis_result or not self.research_page.research_result:
@@ -6922,5 +6931,6 @@ __all__ = [
     "ResearchLandscapeToolPage",
     "ResearchGapToolPage",
     "ResearchReportToolPage",
+    "DatasetSearchPage",
     "MainWindow",
 ]

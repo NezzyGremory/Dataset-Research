@@ -66,13 +66,15 @@ class MLEvaluator:
         self,
         test_size: float = 0.2,
         random_state: int = 42,
-        cv: int = 5,
-        max_cv_rows: int = 50000,
+        cv: int = 3,
+        max_cv_rows: int = 20000,
+        n_jobs: int = 1,
     ) -> None:
         self.test_size = test_size
         self.random_state = random_state
         self.cv = cv
         self.max_cv_rows = max_cv_rows
+        self.n_jobs = n_jobs
 
     # =========================================================
     # PUBLIC API
@@ -212,7 +214,7 @@ class MLEvaluator:
                             y,
                             cv=splitter,
                             scoring=scoring,
-                            n_jobs=-1,
+                            n_jobs=self.n_jobs,
                             error_score="raise",
                         )
 
@@ -393,7 +395,7 @@ class MLEvaluator:
                             y,
                             cv=splitter,
                             scoring=scoring,
-                            n_jobs=-1,
+                            n_jobs=self.n_jobs,
                             error_score="raise",
                         )
 

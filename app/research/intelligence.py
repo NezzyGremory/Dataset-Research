@@ -305,7 +305,12 @@ class ResearchIntelligenceEngine:
 
                 all_papers.extend(self._dicts_to_papers(papers))
 
-                sources = search_result.get("sources", [])
+                # Use provider-level candidate counts when available. This keeps
+                # the research source distribution visible even when duplicate
+                # papers from one provider are removed during deduplication.
+                sources = search_result.get("source_counts")
+                if sources is None:
+                    sources = search_result.get("sources", [])
 
                 if isinstance(sources, dict):
                     for source, count in sources.items():
@@ -576,6 +581,7 @@ class ResearchIntelligenceEngine:
                 "raw_result_count": len(all_papers),
                 "unique_result_count": len(unique_papers),
                 "sources": source_counts,
+                "source_counts": source_counts,
                 "errors": search_errors,
             },
             "papers": ranked_papers,

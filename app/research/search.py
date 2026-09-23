@@ -57,6 +57,7 @@ class AcademicSearchEngine:
             use_scholar = self.scholar.enabled
 
         all_papers: List[Paper] = []
+        candidate_source_counts: Dict[str, int] = {}
         provider_status = {
             "OpenAlex": "ENABLED",
             "Crossref": "ENABLED" if use_crossref else "DISABLED",
@@ -78,6 +79,7 @@ class AcademicSearchEngine:
                 per_page=limit,
             )
             all_papers.extend(openalex_results)
+            candidate_source_counts["OpenAlex"] = len(openalex_results)
         except Exception:
             provider_status["OpenAlex"] = "ERROR"
 
@@ -88,6 +90,7 @@ class AcademicSearchEngine:
                     rows=limit,
                 )
                 all_papers.extend(crossref_results)
+                candidate_source_counts["Crossref"] = len(crossref_results)
             except Exception:
                 provider_status["Crossref"] = "ERROR"
 
@@ -98,6 +101,7 @@ class AcademicSearchEngine:
                     rows=min(limit, 20),
                 )
                 all_papers.extend(scholar_results)
+                candidate_source_counts["Google Scholar"] = len(scholar_results)
             except Exception:
                 provider_status["Google Scholar"] = "ERROR"
 
@@ -131,6 +135,7 @@ class AcademicSearchEngine:
             "papers": [paper.to_dict() for paper in unique_papers],
             "result_count": len(unique_papers),
             "sources": sources,
+            "source_counts": candidate_source_counts,
             "provider_status": provider_status,
             "active_sources": active_sources,
             "candidate_count": len(all_papers),
