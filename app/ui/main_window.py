@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 from typing import Any, Dict
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QObject, QThread, Signal
 from PySide6.QtGui import QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
@@ -38,6 +39,7 @@ from app.analyzer.duplicates import DuplicateAnalyzer
 from app.analyzer.outliers import OutlierAnalyzer
 from app.analyzer.correlations import CorrelationAnalyzer
 from app.analyzer.fingerprint import DatasetFingerprint
+from app.ai.gemini_explainer import GeminiDatasetExplainer
 from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
 from app.ml.intelligence import MLIntelligenceEngine
@@ -54,6 +56,24 @@ def _resource_path(relative_path: str | Path) -> Path:
         return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "app" / "ui" / relative
 
     return Path(__file__).resolve().parent / relative
+
+
+class GeminiExplainWorker(QObject):
+    """Run Gemini explanation off the Qt UI thread."""
+
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, analysis: dict[str, Any]):
+        super().__init__()
+        self.analysis = analysis
+
+    def run(self):
+        try:
+            text = GeminiDatasetExplainer().explain(self.analysis)
+            self.finished.emit(text)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class StatCard(QFrame):
@@ -1232,6 +1252,10 @@ class AnalysisPage(QWidget):
 
         self.main_window = main_window
 
+        self._gemini_thread: QThread | None = None
+        self._gemini_worker: GeminiExplainWorker | None = None
+        self._gemini_label: QLabel | None = None
+
         self.build_ui()
 
     def build_ui(self):
@@ -1474,6 +1498,17 @@ class AnalysisPage(QWidget):
         duplicates = result.get("duplicates") or {}
         outliers = result.get("outliers") or []
         correlations = result.get("correlations")
+
+        # =================================================
+        # AI EXPLANATION
+        # =================================================
+
+        self._gemini_label = self.add_section(
+            "Dataset Explanation",
+            "Sedang membuat penjelasan berdasarkan hasil analisis dataset..."
+        )
+
+        self._start_gemini_explanation(result)
 
         # =================================================
         # OVERVIEW
@@ -1802,6 +1837,55 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(
             card
         )
+
+        return content_label
+
+    def _start_gemini_explanation(self, analysis: dict):
+        """Generate the natural-language explanation without blocking the UI."""
+        self._stop_gemini_explanation()
+
+        explainer = GeminiDatasetExplainer()
+        if not explainer.enabled:
+            if self._gemini_label is not None:
+                self._gemini_label.setText(
+                    "Penjelasan AI belum tersedia karena GEMINI_API_KEY belum diatur."
+                )
+            return
+
+        self._gemini_thread = QThread(self)
+        self._gemini_worker = GeminiExplainWorker(analysis)
+        self._gemini_worker.moveToThread(self._gemini_thread)
+
+        self._gemini_thread.started.connect(self._gemini_worker.run)
+        self._gemini_worker.finished.connect(self._on_gemini_finished)
+        self._gemini_worker.failed.connect(self._on_gemini_failed)
+        self._gemini_worker.finished.connect(self._gemini_thread.quit)
+        self._gemini_worker.failed.connect(self._gemini_thread.quit)
+        self._gemini_worker.finished.connect(self._gemini_worker.deleteLater)
+        self._gemini_worker.failed.connect(self._gemini_worker.deleteLater)
+        self._gemini_thread.finished.connect(self._gemini_thread.deleteLater)
+        self._gemini_thread.finished.connect(self._clear_gemini_refs)
+        self._gemini_thread.start()
+
+    def _stop_gemini_explanation(self):
+        if self._gemini_thread is not None and self._gemini_thread.isRunning():
+            self._gemini_thread.requestInterruption()
+            self._gemini_thread.quit()
+
+    def _clear_gemini_refs(self):
+        self._gemini_thread = None
+        self._gemini_worker = None
+
+    def _on_gemini_finished(self, text: str):
+        if self._gemini_label is not None:
+            self._gemini_label.setText(text)
+
+    def _on_gemini_failed(self, message: str):
+        if self._gemini_label is not None:
+            self._gemini_label.setText(
+                "Penjelasan AI tidak dapat dibuat saat ini.\n"
+                f"{message}"
+            )
 
     # =====================================================
     # FORMAT COLLECTION
@@ -2221,7 +2305,7 @@ class MethodCard(QFrame):
         if reasons:
 
             reasons_title = QLabel(
-                "Why recommended?"
+                "Why this model?"
             )
 
             reasons_title.setObjectName(
@@ -3258,7 +3342,7 @@ class MLIntelligencePage(QWidget):
         # ==================================================
 
         recommendation_title = QLabel(
-            "Recommended ML Methods"
+            "Evaluated ML Methods"
         )
 
         recommendation_title.setObjectName(
@@ -3271,7 +3355,7 @@ class MLIntelligencePage(QWidget):
 
         recommendation_description = QLabel(
             "Ranking berikut berdasarkan hasil training dan validation "
-            "model pada dataset ini. Metric utama ditampilkan pada setiap card."
+            "pada dataset ini. Tidak menggunakan recommendation score statis."
         )
 
         recommendation_description.setObjectName(
@@ -3322,7 +3406,7 @@ class MLIntelligencePage(QWidget):
             best_method = recommendations[0]
 
             detail_title = QLabel(
-                "Top Recommended Method"
+                "Best Empirical Method"
             )
 
             detail_title.setObjectName(
@@ -3341,9 +3425,22 @@ class MLIntelligencePage(QWidget):
 
         else:
 
+            evaluation_message = (
+                getattr(
+                    self,
+                    "last_intelligence_result",
+                    {},
+                ).get(
+                    "evaluation",
+                    {},
+                ).get(
+                    "message",
+                    "Model belum dievaluasi pada dataset ini.",
+                )
+            )
+
             empty_methods = QLabel(
-                "Tidak ada metode yang dapat direkomendasikan "
-                "untuk task yang terdeteksi."
+                str(evaluation_message)
             )
 
             empty_methods.setObjectName(
@@ -6896,15 +6993,26 @@ class MainWindow(QMainWindow):
         if dataframe is None:
             raise ValueError("No dataset is currently loaded.")
 
-        result = {
-            "profile": self.profiler.profile(dataframe),
-            "statistics": self.statistics.analyze(dataframe),
-            "missing_values": self.missing_analyzer.analyze(dataframe),
-            "duplicates": self.duplicate_analyzer.analyze(dataframe),
-            "outliers": self.outlier_analyzer.analyze(dataframe),
-            "correlations": self.correlation_analyzer.analyze(dataframe),
-            "fingerprint": self.fingerprint_analyzer.generate(dataframe),
+        jobs = {
+            "profile": (self.profiler.profile, dataframe),
+            "statistics": (self.statistics.analyze, dataframe),
+            "missing_values": (self.missing_analyzer.analyze, dataframe),
+            "duplicates": (self.duplicate_analyzer.analyze, dataframe),
+            "outliers": (self.outlier_analyzer.analyze, dataframe),
+            "correlations": (self.correlation_analyzer.analyze, dataframe),
+            "fingerprint": (self.fingerprint_analyzer.generate, dataframe),
         }
+
+        # Independent analyzers are read-only against the same DataFrame, so
+        # they can run concurrently and reduce total Run Analysis latency.
+        result = {}
+        with ThreadPoolExecutor(max_workers=min(7, len(jobs))) as executor:
+            futures = {
+                name: executor.submit(func, frame)
+                for name, (func, frame) in jobs.items()
+            }
+            for name, future in futures.items():
+                result[name] = future.result()
 
         self.analysis_result = result
 

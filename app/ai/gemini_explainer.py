@@ -3,36 +3,46 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import httpx
 
 
 class GeminiDatasetExplainer:
     """
-    Gemini hanya digunakan untuk menjelaskan hasil analisis
-    yang SUDAH dihitung oleh analyzer lokal.
+    Explain already-computed Dataset Research analysis in Indonesian.
 
-    Gemini tidak menghitung ulang statistik dataset.
+    Gemini is used only to turn local analyzer results into human-readable
+    wording. It does not calculate statistics, modify numbers, or choose
+    machine-learning methods.
     """
+
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
+    FALLBACK_MODELS = (
+        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash-lite",
+    )
+
+    RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
-    ):
+    ) -> None:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-
         self.model = model or os.getenv(
             "GEMINI_MODEL",
-            "gemini-3.8-flash",
+            self.DEFAULT_MODEL,
         )
 
         self.timeout = float(
-            os.getenv("GEMINI_TIMEOUT", "60")
+            os.getenv("GEMINI_TIMEOUT", "45")
         )
 
-        self.max_retries = 3
+        # Keep the explanation responsive. A model is retried once before
+        # moving to the next available stable Flash fallback.
+        self.retries_per_model = 2
 
     @property
     def enabled(self) -> bool:
@@ -45,163 +55,156 @@ class GeminiDatasetExplainer:
             )
 
         compact = self._compact_analysis(analysis)
+        prompt = self._build_prompt(compact)
 
-        prompt = """
-Kamu adalah penjelas hasil analisis dataset
-untuk aplikasi Dataset Research.
+        models = self._models_to_try()
+        last_error: str | None = None
 
-Tugasmu HANYA menjelaskan hasil analisis
-yang sudah dihitung oleh program.
+        for model_name in models:
+            url = (
+                "https://generativelanguage.googleapis.com/"
+                f"v1beta/models/{model_name}:generateContent"
+            )
 
-Jangan melakukan analisis statistik baru.
-Jangan menghitung ulang angka.
-Jangan mengubah angka.
-Jangan mengarang fakta.
-Jangan memberikan rekomendasi machine learning.
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": prompt}
+                        ],
+                    }
+                ],
+                "generationConfig": {
+                    "thinkingConfig": {
+                        "thinkingLevel": "low"
+                    },
+                    "maxOutputTokens": 1000,
+                },
+            }
 
-Gunakan HANYA informasi yang tersedia
-di DATA ANALYSIS.
+            for attempt in range(1, self.retries_per_model + 1):
+                try:
+                    response = httpx.post(
+                        url,
+                        headers={
+                            "x-goog-api-key": self.api_key,
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                        timeout=self.timeout,
+                    )
 
-Gunakan Bahasa Indonesia yang natural,
-jelas, dan mudah dipahami mahasiswa.
+                    if response.status_code in self.RETRYABLE_STATUS_CODES:
+                        last_error = (
+                            f"{model_name}: HTTP {response.status_code}"
+                        )
 
-Fokus pada:
+                        # A busy model should not block the whole explanation
+                        # flow for too long. Retry once, then try fallback.
+                        if attempt < self.retries_per_model:
+                            time.sleep(1.5 * attempt)
+                            continue
 
-1. Gambaran umum dataset.
-2. Kondisi kualitas data.
-3. Nilai kosong dan duplikat.
-4. Outlier jika ada.
-5. Kolom yang paling menonjol.
-6. Korelasi jika tersedia.
-7. Kesimpulan singkat tentang kondisi dataset.
+                        break
 
-Tulis sekitar 4-6 paragraf pendek.
-Setiap paragraf fokus pada satu aspek.
-Jangan terlalu panjang.
-Jangan membuat tabel.
+                    response.raise_for_status()
 
-Pastikan seluruh aspek di atas dibahas
-jika informasi tersebut memang tersedia
-di DATA ANALYSIS.
+                    data = response.json()
+                    text = self._extract_text(data)
 
-Jangan menyebut:
-- API
-- JSON
-- Gemini
-- model AI
-- prompt
-- instruksi internal
+                    if text:
+                        return text.strip()
 
-Jangan membuat angka baru.
-Jangan mengubah atau memperkirakan angka.
-Gunakan hanya fakta yang diberikan.
+                    last_error = (
+                        f"{model_name}: respons berhasil tetapi teks kosong"
+                    )
+                    break
 
-DATA ANALYSIS:
-""" + json.dumps(
+                except httpx.RequestError as exc:
+                    last_error = (
+                        f"{model_name}: koneksi gagal ({exc})"
+                    )
+
+                    if attempt < self.retries_per_model:
+                        time.sleep(1.5 * attempt)
+                        continue
+
+                    break
+
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    last_error = (
+                        f"{model_name}: HTTP {status}"
+                    )
+                    break
+
+        # Do not expose raw server payloads to the UI.
+        raise RuntimeError(
+            "Gemini sedang tidak dapat membuat penjelasan. "
+            "Analisis dataset tetap tersedia seperti biasa. "
+            "Silakan coba Run Analysis lagi."
+            + (f" ({last_error})" if last_error else "")
+        )
+
+    def _models_to_try(self) -> list[str]:
+        """Return preferred model followed by stable Flash fallbacks."""
+        models: list[str] = []
+
+        for name in (
+            self.model,
+            *self.FALLBACK_MODELS,
+        ):
+            normalized = str(name).strip()
+            if normalized and normalized not in models:
+                models.append(normalized)
+
+        return models
+
+    @staticmethod
+    def _build_prompt(
+        compact: Dict[str, Any],
+    ) -> str:
+        analysis_json = json.dumps(
             compact,
             ensure_ascii=False,
-            indent=2,
+            separators=(",", ":"),
             default=str,
         )
 
-        url = (
-            "https://generativelanguage.googleapis.com/"
-            f"v1beta/models/{self.model}:generateContent"
-        )
+        return f"""
+Kamu adalah penjelas hasil analisis dataset untuk aplikasi Dataset Research.
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": prompt
-                        }
-                    ],
-                }
-            ],
-            "generationConfig": {
-                "thinkingConfig": {
-                    "thinkingLevel": "low"
-                },
-                "maxOutputTokens": 1200,
-            },
-        }
+Tugasmu HANYA menjelaskan fakta yang SUDAH dihitung oleh program lokal.
 
-        last_error: Exception | None = None
+ATURAN MUTLAK:
+- Jangan menghitung ulang statistik.
+- Jangan membuat angka baru.
+- Jangan mengubah angka yang diberikan.
+- Jangan menebak fakta yang tidak tersedia.
+- Jangan melakukan analisis statistik tambahan.
+- Jangan memberikan rekomendasi machine learning.
+- Gunakan hanya DATA ANALYSIS di bawah.
+- Jika suatu bagian tidak tersedia, jangan mengarangnya.
 
-        for attempt in range(
-            1,
-            self.max_retries + 1,
-        ):
-            try:
-                response = httpx.post(
-                    url,
-                    headers={
-                        "x-goog-api-key": self.api_key,
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=self.timeout,
-                )
+Gunakan Bahasa Indonesia yang natural dan mudah dipahami mahasiswa.
 
-                # Error yang biasanya bersifat sementara.
-                if response.status_code in (
-                    429,
-                    502,
-                    503,
-                    504,
-                ):
-                    last_error = RuntimeError(
-                        "Gemini sementara tidak tersedia "
-                        f"(HTTP {response.status_code})."
-                    )
+Jelaskan secara ringkas tetapi lengkap:
+1. Gambaran umum dataset.
+2. Kualitas data dan nilai kosong.
+3. Duplikat.
+4. Outlier jika tersedia.
+5. Kolom yang menonjol jika tersedia.
+6. Korelasi jika tersedia.
+7. Kesimpulan kondisi dataset.
 
-                    if attempt < self.max_retries:
-                        # 2 detik -> 4 detik -> 8 detik
-                        time.sleep(2 ** attempt)
-                        continue
+Tulis sekitar 4-6 paragraf pendek.
+Jangan membuat tabel.
+Jangan menyebut API, JSON, Gemini, model AI, prompt, atau instruksi internal.
 
-                    raise last_error
-
-                response.raise_for_status()
-
-                data = response.json()
-
-                text = self._extract_text(data)
-
-                if not text:
-                    raise RuntimeError(
-                        "Gemini tidak mengembalikan "
-                        "teks penjelasan."
-                    )
-
-                return text.strip()
-
-            except httpx.RequestError as exc:
-                last_error = RuntimeError(
-                    f"Gagal terhubung ke Gemini: {exc}"
-                )
-
-                if attempt < self.max_retries:
-                    time.sleep(2 ** attempt)
-                    continue
-
-                raise last_error from exc
-
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-
-                raise RuntimeError(
-                    f"Gemini mengembalikan HTTP {status}."
-                ) from exc
-
-        if last_error is not None:
-            raise last_error
-
-        raise RuntimeError(
-            "Gagal mendapatkan penjelasan dari Gemini."
-        )
+DATA ANALYSIS:
+{analysis_json}
+""".strip()
 
     @staticmethod
     def _extract_text(
@@ -213,14 +216,13 @@ DATA ANALYSIS:
             content = candidate.get("content") or {}
             parts = content.get("parts") or []
 
-            texts = []
+            texts: list[str] = []
 
             for part in parts:
                 if not isinstance(part, dict):
                     continue
 
                 text = part.get("text")
-
                 if text:
                     texts.append(str(text))
 
@@ -229,40 +231,80 @@ DATA ANALYSIS:
 
         return ""
 
-    @staticmethod
+    @classmethod
     def _compact_analysis(
+        cls,
         analysis: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Hanya mengirim hasil analisis yang sudah dihitung
-        oleh analyzer lokal.
-        """
+        Keep the request small without calculating new statistics.
 
+        We only select already-computed values and cap long collections so a
+        large analyzer result cannot make the explanation request unnecessarily
+        heavy.
+        """
         if not isinstance(analysis, dict):
             return {}
 
         return {
-            "profile": analysis.get(
-                "profile",
-                {},
+            "profile": cls._limit_mapping(
+                analysis.get("profile", {}),
+                max_items=40,
             ),
-            "statistics": analysis.get(
-                "statistics",
-                [],
+            "statistics": cls._limit_collection(
+                analysis.get("statistics", []),
+                max_items=20,
             ),
-            "missing_values": analysis.get(
-                "missing_values",
-                [],
+            "missing_values": cls._limit_collection(
+                analysis.get("missing_values", []),
+                max_items=20,
             ),
-            "duplicates": analysis.get(
-                "duplicates",
-                {},
+            "duplicates": cls._limit_mapping(
+                analysis.get("duplicates", {}),
+                max_items=20,
             ),
-            "outliers": analysis.get(
-                "outliers",
-                [],
+            "outliers": cls._limit_collection(
+                analysis.get("outliers", []),
+                max_items=20,
             ),
-            "correlations": analysis.get(
-                "correlations",
+            "correlations": cls._limit_correlations(
+                analysis.get("correlations")
             ),
         }
+
+    @staticmethod
+    def _limit_collection(
+        value: Any,
+        max_items: int,
+    ) -> Any:
+        if isinstance(value, list):
+            return value[:max_items]
+
+        if isinstance(value, tuple):
+            return list(value[:max_items])
+
+        return value
+
+    @staticmethod
+    def _limit_mapping(
+        value: Any,
+        max_items: int,
+    ) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        items = list(value.items())[:max_items]
+        return dict(items)
+
+    @classmethod
+    def _limit_correlations(
+        cls,
+        value: Any,
+    ) -> Any:
+        if isinstance(value, dict):
+            return cls._limit_mapping(value, 30)
+
+        if isinstance(value, list):
+            return cls._limit_collection(value, 20)
+
+        return value

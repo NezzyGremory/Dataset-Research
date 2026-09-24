@@ -1,1 +1,1 @@
-"""AI helpers for Dataset Research."""
+"""AI explanation helpers for Dataset Research."""

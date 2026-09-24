@@ -140,6 +140,14 @@ class DatasetSearchPage(QWidget):
         self.status_label.setWordWrap(True)
         search_layout.addWidget(self.status_label)
 
+        hint = QLabel(
+            "Ketik topik atau kebutuhan dataset, bukan harus nama dataset. "
+            "Contoh: pertanian, mahasiswa, kesehatan, saham, transportasi."
+        )
+        hint.setObjectName("cardDescription")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
         root.addWidget(search_card)
 
         self.progress = QProgressBar()
@@ -208,7 +216,8 @@ class DatasetSearchPage(QWidget):
             return
 
         self.status_label.setText(
-            f"{len(self.results)} dataset ditemukan. "
+            f"{len(self.results)} dataset ditemukan dari keyword. "
+            "Hasil diurutkan berdasarkan kecocokan topik dan metadata. "
             "Pilih format file lalu Download atau Download & Analyze."
         )
         self._render_results()
@@ -260,6 +269,17 @@ class DatasetSearchPage(QWidget):
         )
         description.setObjectName("cardDescription")
         description.setWordWrap(True)
+
+        explanation = QLabel(
+            "Kenapa cocok: " + (
+                result.match_reason
+                or "Dataset ditemukan dari kata kunci pencarian."
+            )
+        )
+        explanation.setObjectName("cardDescription")
+        explanation.setWordWrap(True)
+
+        layout.addWidget(explanation)
 
         meta_parts = [
             f"Downloads: {result.downloads:,}",
