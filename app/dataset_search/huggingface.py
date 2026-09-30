@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -150,12 +152,18 @@ class HuggingFaceDatasetClient:
         "with", "about", "a", "an", "to", "in", "on",
     }
 
-    def __init__(self, timeout: float = 30.0, max_results: int = 12):
+    def __init__(self, timeout: float = 12.0, max_results: int = 12):
         self.timeout = timeout
         self.max_results = max_results
         self.headers = {
-            "User-Agent": "DatasetResearch/2.0 Dataset Search"
+            "User-Agent": "DatasetResearch/2.1 Dataset Search"
         }
+
+        # Short in-process cache: repeated searches become instant during
+        # the same application session without changing the UI.
+        self.cache_ttl = 300.0
+        self._search_cache = {}
+        self._details_cache = {}
 
     def search(
         self,
@@ -166,21 +174,28 @@ class HuggingFaceDatasetClient:
         if not original_query:
             return []
 
-        limit = max(1, min(limit or self.max_results, 30))
-        search_terms = self._expand_query(original_query)
+        limit = max(1, min(limit or self.max_results, 20))
 
-        with httpx.Client(
-            timeout=self.timeout,
-            headers=self.headers,
-            follow_redirects=True,
-        ) as client:
-            candidates: dict[str, dict[str, Any]] = {}
+        cached = self._search_cache.get(original_query)
+        if cached:
+            cached_at, cached_results = cached
+            if time.monotonic() - cached_at < self.cache_ttl:
+                return list(cached_results[:limit])
 
-            # Run several small API searches. Hugging Face's repository search
-            # is name-oriented, so expansion makes natural-language keyword
-            # searches much more forgiving.
-            per_term_limit = min(max(limit, 8), 15)
-            for term in search_terms:
+        search_terms = self._expand_query(original_query)[:8]
+
+        candidates: dict[str, dict[str, Any]] = {}
+        per_term_limit = min(max(limit, 8), 12)
+
+        # Keep the original, reliable HF request shape. We only parallelize a
+        # small number of search calls and do not use the more aggressive
+        # expand/fan-out optimization that could trigger provider throttling.
+        def fetch_term(term: str):
+            with httpx.Client(
+                timeout=self.timeout,
+                headers=self.headers,
+                follow_redirects=True,
+            ) as client:
                 try:
                     response = client.get(
                         self.API_URL,
@@ -192,11 +207,20 @@ class HuggingFaceDatasetClient:
                         },
                     )
                     response.raise_for_status()
-                    items = response.json()
+                    data = response.json()
+                    return term, data if isinstance(data, list) else []
                 except (httpx.HTTPError, ValueError):
-                    continue
+                    return term, []
 
-                if not isinstance(items, list):
+        # A small worker pool reduces wall-clock time but avoids a burst of
+        # requests that can hit the Hub's rate limits.
+        worker_count = min(3, max(1, len(search_terms)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(fetch_term, term) for term in search_terms]
+            for future in futures:
+                try:
+                    term, items = future.result()
+                except Exception:
                     continue
 
                 for item in items:
@@ -214,33 +238,121 @@ class HuggingFaceDatasetClient:
                     else:
                         existing["terms"].add(term)
 
-            if not candidates:
-                return []
+        if not candidates:
+            self._search_cache[original_query] = (time.monotonic(), [])
+            return []
 
-            results: list[DatasetSearchResult] = []
-            for candidate in candidates.values():
-                item = candidate["item"]
-                dataset_id = str(item.get("id") or "")
-                details = self._get_details(client, dataset_id)
-                result = self._parse_result(
-                    item,
-                    details,
-                    original_query,
-                )
-                if result is None:
+        # Rank using whatever metadata the search endpoint already returned.
+        ranked_candidates = sorted(
+            candidates.values(),
+            key=lambda candidate: self._quick_candidate_score(
+                original_query,
+                candidate["item"],
+            ),
+            reverse=True,
+        )
+
+        # Only enrich the top few results; the previous version fetched full
+        # details for every candidate, which was the biggest latency source.
+        top_candidates = ranked_candidates[:min(limit, 6)]
+
+        def enrich(candidate):
+            item = candidate["item"]
+            dataset_id = str(item.get("id") or "")
+            cached_detail = self._details_cache.get(dataset_id)
+            if cached_detail:
+                cached_at, detail = cached_detail
+                if time.monotonic() - cached_at < self.cache_ttl:
+                    return candidate, detail
+
+            try:
+                with httpx.Client(
+                    timeout=self.timeout,
+                    headers=self.headers,
+                    follow_redirects=True,
+                ) as client:
+                    detail = self._get_details(client, dataset_id)
+            except Exception:
+                detail = {}
+            return candidate, detail
+
+        enriched = []
+        with ThreadPoolExecutor(max_workers=min(3, len(top_candidates) or 1)) as executor:
+            futures = [executor.submit(enrich, candidate) for candidate in top_candidates]
+            for future in futures:
+                try:
+                    enriched.append(future.result())
+                except Exception:
                     continue
+
+        results: list[DatasetSearchResult] = []
+        for candidate, details in enriched:
+            result = self._parse_result(
+                candidate["item"],
+                details,
+                original_query,
+            )
+            if result is not None:
                 results.append(result)
 
-            results.sort(
-                key=lambda result: (
-                    result.relevance_score,
-                    result.downloads,
-                    result.likes,
-                ),
-                reverse=True,
-            )
+        results.sort(
+            key=lambda result: (
+                result.relevance_score,
+                result.downloads,
+                result.likes,
+            ),
+            reverse=True,
+        )
 
-            return results[:limit]
+        results = results[:limit]
+        self._search_cache[original_query] = (
+            time.monotonic(),
+            list(results),
+        )
+        return results
+
+    def _quick_candidate_score(
+        self,
+        original_query: str,
+        item: dict[str, Any],
+    ) -> float:
+        dataset_id = self._normalize_text(str(item.get("id") or ""))
+        description = self._normalize_text(
+            str(item.get("description") or "")
+        )
+        tags = item.get("tags") or []
+        tag_text = " ".join(
+            self._normalize_text(str(tag)) for tag in tags
+        )
+
+        query_tokens = [
+            token
+            for token in re.findall(r"[a-zA-Z0-9À-ÿ]+", original_query)
+            if token not in self.STOPWORDS and len(token) > 1
+        ]
+
+        terms = list(query_tokens)
+        for token in query_tokens:
+            terms.extend(self.KEYWORD_ALIASES.get(token, ()))
+        terms.extend(self.KEYWORD_ALIASES.get(original_query, ()))
+
+        score = 0.0
+        for term in terms:
+            normalized = self._normalize_text(term)
+            if not normalized:
+                continue
+            if normalized in dataset_id:
+                score += 12.0
+            if normalized in tag_text:
+                score += 8.0
+            if normalized in description:
+                score += 5.0
+
+        try:
+            downloads = int(item.get("downloads", 0) or 0)
+        except (TypeError, ValueError):
+            downloads = 0
+        return score + downloads / 1_000_000.0
 
     def _expand_query(self, query: str) -> list[str]:
         query = self._normalize_text(query)
@@ -288,6 +400,12 @@ class HuggingFaceDatasetClient:
         client: httpx.Client,
         dataset_id: str,
     ) -> dict[str, Any]:
+        cached = self._details_cache.get(dataset_id)
+        if cached:
+            cached_at, data = cached
+            if time.monotonic() - cached_at < self.cache_ttl:
+                return dict(data)
+
         try:
             response = client.get(
                 f"{self.API_URL}/{quote(dataset_id, safe='/')}",
@@ -296,7 +414,13 @@ class HuggingFaceDatasetClient:
             if response.status_code >= 400:
                 return {}
             data = response.json()
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            self._details_cache[dataset_id] = (
+                time.monotonic(),
+                data,
+            )
+            return data
         except (httpx.HTTPError, ValueError):
             return {}
 

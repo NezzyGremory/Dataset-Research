@@ -27,8 +27,8 @@ class ScholarClient:
     ):
         self.api_key = (
             api_key
-            or os.getenv("SERPAPI_API_KEY")
-            or os.getenv("SERPAPI_KEY")
+            or os.getenv("2cc32645e203e961f59adfbbec566c80a5b1a3e0702b6e489517b45cd344ea95")
+            or os.getenv("2cc32645e203e961f59adfbbec566c80a5b1a3e0702b6e489517b45cd344ea95")
         )
         self.timeout = timeout
         self.hl = hl
