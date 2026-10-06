@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 from typing import Any, Dict
+import pandas as pd
 
 from PySide6.QtCore import Qt, QUrl, QObject, QThread, Signal
 from PySide6.QtGui import QPixmap, QDesktopServices
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QHeaderView,
+    QInputDialog,
 )
 
 from app.analyzer.loader import DatasetLoader
@@ -39,12 +41,15 @@ from app.analyzer.duplicates import DuplicateAnalyzer
 from app.analyzer.outliers import OutlierAnalyzer
 from app.analyzer.correlations import CorrelationAnalyzer
 from app.analyzer.fingerprint import DatasetFingerprint
-from app.ai.gemini_explainer import GeminiDatasetExplainer
+from app.analyzer.data_quality import DataQualityDiagnoser
+from app.ai.gemini_explainer import GeminiDatasetExplainer, get_saved_api_key, save_api_key
+from app.ai.local_explainer import LocalAcademicExplainer
 from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
 from app.ml.intelligence import MLIntelligenceEngine
 from app.research.intelligence import ResearchIntelligenceEngine
 from app.ui.dataset_search_page import DatasetSearchPage
+from app.storage import Database, ProjectRepository, DatasetVersionManager
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -59,9 +64,9 @@ def _resource_path(relative_path: str | Path) -> Path:
 
 
 class GeminiExplainWorker(QObject):
-    """Run Gemini explanation off the Qt UI thread."""
+    """Run Gemini / Hybrid academic explanation off the Qt UI thread."""
 
-    finished = Signal(str)
+    finished = Signal(str, str)  # (text, source)
     failed = Signal(str)
 
     def __init__(self, analysis: dict[str, Any]):
@@ -70,10 +75,15 @@ class GeminiExplainWorker(QObject):
 
     def run(self):
         try:
-            text = GeminiDatasetExplainer().explain(self.analysis)
-            self.finished.emit(text)
-        except Exception as exc:
-            self.failed.emit(str(exc))
+            explainer = GeminiDatasetExplainer()
+            text, source = explainer.explain_with_source(self.analysis)
+            self.finished.emit(text, source)
+        except Exception:
+            try:
+                local_text = LocalAcademicExplainer().explain(self.analysis)
+                self.finished.emit(local_text, "local")
+            except Exception as local_exc:
+                self.failed.emit(str(local_exc))
 
 
 class StatCard(QFrame):
@@ -1214,10 +1224,27 @@ class UploadPage(QWidget):
                 file_path
             ).name
 
+            # Inisialisasi Project & Dataset Versioning (v0)
+            try:
+                self.main_window.current_project_id = (
+                    self.main_window.repository.create_project(
+                        name=filename,
+                        dataset_name=filename,
+                        dataset_path=str(file_path),
+                    )
+                )
+                self.main_window.version_manager.create_initial_version(
+                    self.main_window.current_project_id,
+                    file_path,
+                )
+            except Exception as ver_err:
+                print(f"Warning: create_initial_version: {ver_err}")
+
             file_size = (
                 Path(file_path).stat().st_size
                 / 1024
             )
+
 
             self.info_label.setText(
                 f"<b>File:</b> {filename}<br>"
@@ -1498,86 +1525,43 @@ class AnalysisPage(QWidget):
         duplicates = result.get("duplicates") or {}
         outliers = result.get("outliers") or []
         correlations = result.get("correlations")
+        fingerprint = result.get("fingerprint") or {}
 
         # =================================================
-        # AI EXPLANATION
+        # ANALYSIS CELL 01: DATASET PROFILING & UNDERSTANDING
         # =================================================
-
-        self._gemini_label = self.add_section(
-            "Dataset Explanation",
-            "Sedang membuat penjelasan berdasarkan hasil analisis dataset..."
-        )
-
-        self._start_gemini_explanation(result)
+        self.add_cell_profiling(profile, fingerprint, statistics)
 
         # =================================================
-        # OVERVIEW
+        # ANALYSIS CELL 02: DATA QUALITY DIAGNOSIS (4 PILLARS)
         # =================================================
-
-        self.add_section(
-            "Dataset Overview",
-            self.format_profile(profile)
-        )
+        quality_issues = result.get("data_quality") or []
+        self.add_cell_data_quality(quality_issues)
 
         # =================================================
-        # COLUMN STATISTICS
+        # ANALYSIS CELL 03: MISSING VALUE ANALYSIS & TREATMENT
         # =================================================
-
-        self.add_section(
-            "Column Statistics",
-            self.format_statistics(statistics)
-        )
+        self.add_cell_missing_values(missing_values)
 
         # =================================================
-        # MISSING VALUES
+        # ANALYSIS CELL 04: OUTLIER DETECTION (IQR METHOD)
         # =================================================
-
-        self.add_section(
-            "Missing Values",
-            self.format_missing(missing_values)
-        )
+        self.add_cell_outliers(outliers)
 
         # =================================================
-        # DUPLICATES
+        # ANALYSIS CELL 05: CORRELATION & FEATURE RELATIONSHIPS
         # =================================================
-
-        self.add_section(
-            "Duplicates",
-            self.format_duplicates(duplicates)
-        )
+        self.add_cell_correlations(correlations)
 
         # =================================================
-        # OUTLIERS
+        # ANALYSIS CELL 06: DATASET VERSIONS & RESEARCH TRAIL
         # =================================================
-
-        self.add_section(
-            "Outliers",
-            self.format_outliers(outliers)
-        )
+        self.add_versioning_section()
 
         # =================================================
-        # CORRELATIONS
+        # ANALYSIS CELL 07: AI RESEARCH INTERPRETATION
         # =================================================
-
-        self.add_section(
-            "Correlation Analysis",
-            self.format_correlations(correlations)
-        )
-
-        # =================================================
-        # FINGERPRINT
-        # =================================================
-
-        fingerprint = result.get("fingerprint")
-        if fingerprint:
-            fingerprint_text = (
-                f"Fingerprint dataset tersedia.\n"
-                f"SHA-256: {fingerprint.get('fingerprint', '—')}"
-            )
-            self.add_section(
-                "Dataset Fingerprint",
-                fingerprint_text
-            )
+        self.add_cell_gemini(result)
 
         self.result_layout.addStretch()
 
@@ -1844,14 +1828,6 @@ class AnalysisPage(QWidget):
         """Generate the natural-language explanation without blocking the UI."""
         self._stop_gemini_explanation()
 
-        explainer = GeminiDatasetExplainer()
-        if not explainer.enabled:
-            if self._gemini_label is not None:
-                self._gemini_label.setText(
-                    "Penjelasan AI belum tersedia karena GEMINI_API_KEY belum diatur."
-                )
-            return
-
         self._gemini_thread = QThread(self)
         self._gemini_worker = GeminiExplainWorker(analysis)
         self._gemini_worker.moveToThread(self._gemini_thread)
@@ -1876,15 +1852,27 @@ class AnalysisPage(QWidget):
         self._gemini_thread = None
         self._gemini_worker = None
 
-    def _on_gemini_finished(self, text: str):
+    def _on_gemini_finished(self, text: str, source: str = "local"):
         if self._gemini_label is not None:
             self._gemini_label.setText(text)
+        if hasattr(self, "_gemini_badge") and self._gemini_badge is not None:
+            if source == "gemini":
+                self._gemini_badge.setText("Cloud AI (Gemini)")
+                self._gemini_badge.setStyleSheet(
+                    "background: #EEF5FF; color: #3D78D8; border: 1px solid #D7E8FF; "
+                    "border-radius: 10px; font-size: 10px; font-weight: 700; padding: 2px 10px;"
+                )
+            else:
+                self._gemini_badge.setText("Local Academic Engine")
+                self._gemini_badge.setStyleSheet(
+                    "background: #EAF7F0; color: #2C9B68; border: 1px solid #D3EFDF; "
+                    "border-radius: 10px; font-size: 10px; font-weight: 700; padding: 2px 10px;"
+                )
 
     def _on_gemini_failed(self, message: str):
         if self._gemini_label is not None:
             self._gemini_label.setText(
-                "Penjelasan AI tidak dapat dibuat saat ini.\n"
-                f"{message}"
+                "Gagal memuat interpretasi cloud. Sistem menggunakan interpretasi lokal."
             )
 
     # =====================================================
@@ -1931,6 +1919,935 @@ class AnalysisPage(QWidget):
         )
 
         self.show_empty_state()
+
+    # =========================================================
+    # ANALYSIS CELLS (PROJECT BRIEF SECTION 6 & STAGES 2-5)
+    # =========================================================
+
+    def _create_cell_frame(
+        self,
+        cell_number: str,
+        title: str,
+        subtitle: str = "",
+        badge_text: str = "",
+        badge_style: str = "info",
+    ) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        # Header row
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+
+        cell_badge = QLabel(cell_number)
+        cell_badge.setStyleSheet(
+            "background: #EEF4FF; color: #1E40AF; font-weight: 800; "
+            "font-size: 10px; border-radius: 4px; padding: 3px 8px; "
+            "border: 1px solid #BFDBFE;"
+        )
+        header_row.addWidget(cell_badge)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("sectionTitle")
+        header_row.addWidget(title_label)
+
+        header_row.addStretch()
+
+        if badge_text:
+            colors = {
+                "success": ("#EAF7F0", "#2C9B68", "#D3EFDF"),
+                "warning": ("#FFF8EB", "#C27D1A", "#F5DDA6"),
+                "critical": ("#FFF0F0", "#C23030", "#F5CACA"),
+                "info": ("#EEF5FF", "#3D78D8", "#D7E8FF"),
+            }
+            bg, text_c, border_c = colors.get(badge_style, colors["info"])
+            status_badge = QLabel(badge_text)
+            status_badge.setStyleSheet(
+                f"background: {bg}; color: {text_c}; border: 1px solid {border_c}; "
+                f"border-radius: 10px; font-size: 10px; font-weight: 700; padding: 2px 10px;"
+            )
+            card.status_badge = status_badge
+        else:
+            card.status_badge = None
+
+        layout.addLayout(header_row)
+
+        if subtitle:
+            sub_label = QLabel(subtitle)
+            sub_label.setObjectName("cardDescription")
+            sub_label.setWordWrap(True)
+            layout.addWidget(sub_label)
+
+        return card, layout
+
+    # ---------------------------------------------------------
+    # CELL 01: DATASET PROFILING & UNDERSTANDING
+    # ---------------------------------------------------------
+
+    def add_cell_profiling(self, profile, fingerprint, statistics):
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 01",
+            "Dataset Profiling & Understanding",
+            "Memahami struktur dasar dataset, dimensi, tipe semantik, dan kandidat target penelitian.",
+            badge_text="Terstruktur",
+            badge_style="success",
+        )
+
+        rows = profile.get("rows", 0)
+        cols = profile.get("columns", 0)
+        num_cols = profile.get("numeric_columns", 0)
+        cat_cols = profile.get("categorical_columns", 0)
+        mem_bytes = profile.get("memory_usage", 0)
+        mem_str = f"{mem_bytes / 1024:.1f} KB" if mem_bytes < 1024 * 1024 else f"{mem_bytes / (1024 * 1024):.2f} MB"
+
+        # Metric Chips Row
+        chips_row = QHBoxLayout()
+        chips_row.setSpacing(8)
+        chips_data = [
+            ("Baris", f"{rows:,}"),
+            ("Kolom", f"{cols:,}"),
+            ("Numerik", f"{num_cols:,}"),
+            ("Kategorikal", f"{cat_cols:,}"),
+            ("Memori", mem_str),
+        ]
+        for label, val in chips_data:
+            chip = QLabel(f"<b>{val}</b> <span style='color: #8492A5;'>{label}</span>")
+            chip.setStyleSheet(
+                "background: #F2F7FD; border: 1px solid #DCE8F7; "
+                "border-radius: 6px; padding: 5px 12px; font-size: 11px;"
+            )
+            chips_row.addWidget(chip)
+        chips_row.addStretch()
+        layout.addLayout(chips_row)
+
+        # Target Candidates Detection from Fingerprint
+        rep = fingerprint.get("representation", {}) if isinstance(fingerprint, dict) else {}
+        target_candidates = rep.get("target_candidates", [])
+        col_sigs = {c.get("name"): c for c in rep.get("column_signature", []) if isinstance(c, dict)}
+
+        target_box = QFrame()
+        target_box.setStyleSheet(
+            "background: #EAF7F0; border: 1px solid #D3EFDF; border-radius: 8px; padding: 10px 14px;"
+        )
+        t_layout = QVBoxLayout(target_box)
+        t_layout.setContentsMargins(0, 0, 0, 0)
+        t_layout.setSpacing(4)
+
+        if target_candidates:
+            first_target = target_candidates[0]
+            sig = col_sigs.get(first_target, {})
+            score = sig.get("target_score", 60)
+            reasons = sig.get("target_reasons", [])
+            reasons_str = "; ".join(reasons) if reasons else "Indikasi target klasifikasi/regresi"
+            u_count = sig.get("unique_count", "-")
+            task_type = "Binary Classification" if u_count == 2 else ("Multiclass Classification" if isinstance(u_count, int) and u_count <= 10 else "Regression / Prediksi")
+            t_title = QLabel(f"<b>Kandidat Target Terdeteksi:</b> <span style='color: #2C9B68; font-weight: bold;'>{first_target}</span> ({task_type})")
+            t_desc = QLabel(f"Skor heuristik: <b>{score}/100</b> &nbsp;&bull;&nbsp; Evidence: {reasons_str}")
+        else:
+            t_title = QLabel("<b>Kandidat Target:</b> Tidak terdeteksi kolom target eksplisit.")
+            t_desc = QLabel("Dataset ini ideal untuk task Unsupervised Learning (Clustering, Analisis Komponen Utama/PCA, atau Deteksi Anomali).")
+
+        t_title.setStyleSheet("color: #1A3A28; font-size: 12px;")
+        t_desc.setStyleSheet("color: #2C6B4A; font-size: 11px;")
+        t_layout.addWidget(t_title)
+        t_layout.addWidget(t_desc)
+        layout.addWidget(target_box)
+
+        # Feature Schema & Column Characteristics Table (Stage 2: Data Understanding)
+        if statistics:
+            schema_title = QLabel("<b>Skema & Karakteristik Fitur (Feature Schema & Summary):</b>")
+            schema_title.setStyleSheet("font-size: 12px; color: #1C2B40; margin-top: 6px;")
+            layout.addWidget(schema_title)
+
+            schema_table = QTableWidget()
+            schema_table.setColumnCount(5)
+            schema_table.setHorizontalHeaderLabels([
+                "Nama Fitur", "Tipe Data", "Nilai Unik", "Missing (%)", "Ringkasan Statistik / Modus"
+            ])
+            schema_table.setRowCount(len(statistics))
+            schema_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            schema_table.verticalHeader().setVisible(False)
+            schema_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+            for r_idx, stat in enumerate(statistics):
+                col_name = str(stat.get("column", "—"))
+                dtype = str(stat.get("dtype", "—"))
+                u_cnt = stat.get("unique_count", 0)
+                m_pct = stat.get("missing_percentage", 0.0)
+
+                # Summary stats text
+                if stat.get("mean") is not None:
+                    summary = f"Rentang: [{stat.get('min', 0):.2g} – {stat.get('max', 0):.2g}] | Mean: {stat.get('mean', 0):.2f}"
+                elif stat.get("top_values"):
+                    top_v = stat["top_values"][0]
+                    summary = f"Modus: {top_v.get('value')} ({top_v.get('frequency')}x)"
+                else:
+                    summary = "—"
+
+                schema_table.setItem(r_idx, 0, QTableWidgetItem(col_name))
+
+                dt_item = QTableWidgetItem(dtype)
+                dt_item.setTextAlignment(Qt.AlignCenter)
+                schema_table.setItem(r_idx, 1, dt_item)
+
+                u_item = QTableWidgetItem(f"{u_cnt:,}")
+                u_item.setTextAlignment(Qt.AlignCenter)
+                schema_table.setItem(r_idx, 2, u_item)
+
+                m_item = QTableWidgetItem(f"{m_pct:.1f}%")
+                m_item.setTextAlignment(Qt.AlignCenter)
+                schema_table.setItem(r_idx, 3, m_item)
+
+                schema_table.setItem(r_idx, 4, QTableWidgetItem(summary))
+
+            schema_table.setFixedHeight(min(200, 36 + len(statistics) * 28))
+            layout.addWidget(schema_table)
+
+        # Data Preview (5 baris pertama)
+        df = getattr(self.main_window, "current_dataset", None)
+        if df is not None and not df.empty:
+            preview_title = QLabel("<b>Data Preview (5 Baris Pertama):</b>")
+            preview_title.setStyleSheet("font-size: 12px; color: #1C2B40; margin-top: 6px;")
+            layout.addWidget(preview_title)
+
+            preview_head = df.head(5)
+            p_table = QTableWidget()
+            p_table.setColumnCount(len(preview_head.columns))
+            p_table.setRowCount(len(preview_head))
+            p_table.setHorizontalHeaderLabels([str(c) for c in preview_head.columns])
+            p_table.verticalHeader().setVisible(True)
+            p_table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+            for r in range(len(preview_head)):
+                for c in range(len(preview_head.columns)):
+                    val = preview_head.iloc[r, c]
+                    val_str = "" if pd.isna(val) else str(val)
+                    p_table.setItem(r, c, QTableWidgetItem(val_str))
+
+            p_table.setFixedHeight(175)
+            layout.addWidget(p_table)
+
+        # Fingerprint hash if available
+        fp_hash = fingerprint.get("fingerprint") if isinstance(fingerprint, dict) else None
+        if fp_hash:
+            fp_lbl = QLabel(f"<span style='color: #64748B;'>Dataset SHA-256 Fingerprint:</span> <code style='color: #475569;'>{fp_hash[:24]}...</code>")
+            fp_lbl.setStyleSheet("font-size: 11px;")
+            layout.addWidget(fp_lbl)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 02: DATA QUALITY DIAGNOSIS (4 PILLARS)
+    # ---------------------------------------------------------
+
+    def add_cell_data_quality(self, quality_issues):
+        has_crit = any(i.severity == "critical" for i in quality_issues)
+        has_warn = any(i.severity == "warning" for i in quality_issues)
+        b_text = "Isu Kritis" if has_crit else ("Peringatan Kualitas" if has_warn else "Data Bersih")
+        b_style = "critical" if has_crit else ("warning" if has_warn else "success")
+
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 02",
+            "Data Quality Diagnosis (4 Pillars)",
+            "Diagnosis kualitas data komprehensif: Apa Masalahnya, Seberapa Besar, Apa Dampaknya, dan Opsi Penanganannya.",
+            badge_text=b_text,
+            badge_style=b_style,
+        )
+
+        if not quality_issues:
+            good_lbl = QLabel("<b>Kondisi Data Prima:</b> Tidak ditemukan masalah duplikat, nilai kosong signifikan, maupun outlier ekstrem.")
+            good_lbl.setStyleSheet("color: #2C9B68; font-size: 12px; padding: 6px 0;")
+            layout.addWidget(good_lbl)
+            self.result_layout.addWidget(card)
+            return
+
+        for issue in quality_issues:
+            issue_box = QFrame()
+            border_c = "#F5CACA" if issue.severity == "critical" else ("#F5DDA6" if issue.severity == "warning" else "#DCE8F7")
+            bg_c = "#FFF8F8" if issue.severity == "critical" else ("#FFFBF0" if issue.severity == "warning" else "#F8FAFD")
+            issue_box.setStyleSheet(
+                f"background: {bg_c}; border: 1px solid {border_c}; border-radius: 8px; padding: 12px 14px;"
+            )
+            i_layout = QVBoxLayout(issue_box)
+            i_layout.setContentsMargins(0, 0, 0, 0)
+            i_layout.setSpacing(6)
+
+            sev_tag = "[Kritis]" if issue.severity == "critical" else ("[Peringatan]" if issue.severity == "warning" else "[Info]")
+            sev_color = "#C23030" if issue.severity == "critical" else ("#C27D1A" if issue.severity == "warning" else "#3D78D8")
+            header = QLabel(f"<span style='color: {sev_color}; font-weight: 700;'>{sev_tag}</span> <b>{issue.title}</b>")
+            header.setStyleSheet("font-size: 13px; color: #172033;")
+            i_layout.addWidget(header)
+
+            p1 = QLabel(f"<b>1. Apa Masalahnya?</b> {issue.problem}")
+            p1.setWordWrap(True)
+            p1.setStyleSheet("font-size: 11px; color: #344158;")
+            i_layout.addWidget(p1)
+
+            p2 = QLabel(f"<b>2. Seberapa Besar Masalahnya?</b> {issue.magnitude}")
+            p2.setWordWrap(True)
+            p2.setStyleSheet("font-size: 11px; color: #344158;")
+            i_layout.addWidget(p2)
+
+            p3 = QLabel(f"<b>3. Apa Dampaknya?</b> {issue.impact}")
+            p3.setWordWrap(True)
+            p3.setStyleSheet("font-size: 11px; color: #344158;")
+            i_layout.addWidget(p3)
+
+            opt_lines = "<br>".join([f"&nbsp;&bull;&nbsp; {opt}" for opt in issue.options])
+            p4 = QLabel(f"<b>4. Apa Opsi Penanganannya?</b><br>{opt_lines}")
+            p4.setWordWrap(True)
+            p4.setStyleSheet("font-size: 11px; color: #344158;")
+            i_layout.addWidget(p4)
+
+            # Direct Remediation Actions (Stage 5 Data Prep with Versioning)
+            if issue.category == "duplicates":
+                btn_row = QHBoxLayout()
+                btn_row.setSpacing(8)
+                dup_action_btn = QPushButton("Hapus Duplikat Sekarang (Buat Versi Baru)")
+                dup_action_btn.setObjectName("secondaryButton")
+                dup_action_btn.clicked.connect(self._handle_remove_duplicates)
+                btn_row.addWidget(dup_action_btn)
+                btn_row.addStretch()
+                i_layout.addLayout(btn_row)
+            elif issue.category == "missing_values":
+                btn_row = QHBoxLayout()
+                btn_row.setSpacing(8)
+                imp_btn = QPushButton("Terapkan Imputasi (Median / Modus)")
+                imp_btn.setObjectName("secondaryButton")
+                imp_btn.clicked.connect(self._handle_impute_missing)
+                drop_btn = QPushButton("Drop Baris dengan Missing Values")
+                drop_btn.setObjectName("secondaryButton")
+                drop_btn.clicked.connect(self._handle_drop_missing)
+                btn_row.addWidget(imp_btn)
+                btn_row.addWidget(drop_btn)
+                btn_row.addStretch()
+                i_layout.addLayout(btn_row)
+
+            layout.addWidget(issue_box)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 03: MISSING VALUE ANALYSIS & TREATMENT
+    # ---------------------------------------------------------
+
+    def add_cell_missing_values(self, missing_values):
+        active_missing = [
+            m for m in missing_values
+            if isinstance(m, dict) and self._number(m.get("missing_count", 0)) > 0
+        ]
+        b_text = f"{len(active_missing)} Kolom Kosong" if active_missing else "0 Nilai Kosong"
+        b_style = "warning" if active_missing else "success"
+
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 03",
+            "Missing Value Analysis & Treatment",
+            "Distribusi nilai kosong per fitur dan tindakan pembersihan (data preparation).",
+            badge_text=b_text,
+            badge_style=b_style,
+        )
+
+        if not active_missing:
+            no_miss = QLabel("Seluruh kolom memiliki data lengkap (0 missing values). Tidak diperlukan perlakuan imputasi.")
+            no_miss.setStyleSheet("color: #2C9B68; font-size: 12px; padding: 4px 0;")
+            layout.addWidget(no_miss)
+            self.result_layout.addWidget(card)
+            return
+
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Kolom", "Jumlah Kosong", "Persentase", "Status Keparahan"])
+        table.setRowCount(len(active_missing))
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        for row_idx, item in enumerate(active_missing):
+            col_name = str(item.get("column", "—"))
+            count = int(self._number(item.get("missing_count", 0)))
+            pct = float(self._number(item.get("missing_percentage", 0)))
+
+            table.setItem(row_idx, 0, QTableWidgetItem(col_name))
+
+            c_item = QTableWidgetItem(f"{count:,}")
+            c_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 1, c_item)
+
+            p_item = QTableWidgetItem(f"{pct:.1f}%")
+            p_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 2, p_item)
+
+            tag_str = "Kritis (>40%)" if pct > 40 else ("Sedang (5-40%)" if pct >= 5 else "Rendah (<5%)")
+            s_item = QTableWidgetItem(tag_str)
+            s_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 3, s_item)
+
+        table.setFixedHeight(min(160, 36 + len(active_missing) * 30))
+        layout.addWidget(table)
+
+        # Action Buttons (Stage 5 Data Prep with Versioning!)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+
+        impute_btn = QPushButton("Terapkan Imputasi (Median / Modus)")
+        impute_btn.setObjectName("secondaryButton")
+        impute_btn.clicked.connect(self._handle_impute_missing)
+        action_row.addWidget(impute_btn)
+
+        drop_btn = QPushButton("Drop Baris dengan Missing Values")
+        drop_btn.setObjectName("secondaryButton")
+        drop_btn.clicked.connect(self._handle_drop_missing)
+        action_row.addWidget(drop_btn)
+
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 04: OUTLIER DETECTION (IQR METHOD)
+    # ---------------------------------------------------------
+
+    def add_cell_outliers(self, outliers):
+        active_outliers = [
+            o for o in outliers
+            if isinstance(o, dict) and self._number(o.get("outlier_count", 0)) > 0
+        ]
+        b_text = f"{len(active_outliers)} Kolom Outlier" if active_outliers else "0 Outlier"
+        b_style = "info" if active_outliers else "success"
+
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 04",
+            "Outlier Detection (IQR Method)",
+            "Deteksi observasi ekstrem menggunakan Interquartile Range [Q1 - 1.5×IQR, Q3 + 1.5×IQR].",
+            badge_text=b_text,
+            badge_style=b_style,
+        )
+
+        if not active_outliers:
+            no_out = QLabel("Tidak terdeteksi nilai ekstrem di luar ambang 1.5×IQR pada seluruh fitur numerik.")
+            no_out.setStyleSheet("color: #2C9B68; font-size: 12px; padding: 4px 0;")
+            layout.addWidget(no_out)
+            self.result_layout.addWidget(card)
+            return
+
+        table = QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["Kolom", "Batas Bawah", "Batas Atas", "Jumlah Outlier", "Persentase"])
+        table.setRowCount(len(active_outliers))
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        for row_idx, item in enumerate(active_outliers):
+            col_name = str(item.get("column", "—"))
+            low = float(self._number(item.get("lower_bound", 0)))
+            high = float(self._number(item.get("upper_bound", 0)))
+            cnt = int(self._number(item.get("outlier_count", 0)))
+            pct = float(self._number(item.get("outlier_percentage", 0)))
+
+            table.setItem(row_idx, 0, QTableWidgetItem(col_name))
+            table.setItem(row_idx, 1, QTableWidgetItem(self._fmt_number(low)))
+            table.setItem(row_idx, 2, QTableWidgetItem(self._fmt_number(high)))
+            c_item = QTableWidgetItem(f"{cnt:,}")
+            c_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 3, c_item)
+            p_item = QTableWidgetItem(f"{pct:.1f}%")
+            p_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 4, p_item)
+
+        table.setFixedHeight(min(160, 36 + len(active_outliers) * 30))
+        layout.addWidget(table)
+
+        tip = QLabel(
+            "<b>Catatan Metodologis:</b> Outlier pada dataset penelitian ilmiah tidak selalu berupa noise. "
+            "Untuk model regresi/KNN gunakan <b>RobustScaler</b>; untuk model <b>Random Forest / Gradient Boosting</b>, "
+            "outlier tidak mendistorsi pembagian pohon keputusan."
+        )
+        tip.setStyleSheet("font-size: 11px; color: #52657D; background: #F2F7FD; border: 1px solid #DCE8F7; border-radius: 6px; padding: 8px 12px;")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 05: CORRELATION & FEATURE RELATIONSHIPS
+    # ---------------------------------------------------------
+
+    def add_cell_correlations(self, correlations):
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 05",
+            "Correlation & Feature Relationships",
+            "Analisis korelasi Pearson antar fitur numerik dan deteksi multikolinearitas (|r| > 0.85).",
+            badge_text="Bivariate / Multivariate",
+            badge_style="info",
+        )
+
+        pairs = []
+        if hasattr(correlations, "columns") and hasattr(correlations, "iloc"):
+            try:
+                cols = list(correlations.columns)
+                for i in range(len(cols)):
+                    for j in range(i + 1, len(cols)):
+                        val = float(correlations.iloc[i, j])
+                        if val == val:
+                            pairs.append((abs(val), cols[i], cols[j], val))
+                pairs.sort(reverse=True)
+            except Exception:
+                pass
+
+        if not pairs:
+            no_corr = QLabel("Tidak ada hubungan numerik yang dapat dibandingkan (kurang dari 2 kolom numerik).")
+            no_corr.setStyleSheet("color: #64748B; font-size: 12px;")
+            layout.addWidget(no_corr)
+            self.result_layout.addWidget(card)
+            return
+
+        top_pairs = pairs[:5]
+        p_lines = []
+        high_corr_found = False
+        for _, left, right, val in top_pairs:
+            dir_str = "positif" if val > 0 else "negatif"
+            strength = "kuat" if abs(val) >= 0.7 else ("sedang" if abs(val) >= 0.3 else "lemah")
+            if abs(val) > 0.85:
+                high_corr_found = True
+            p_lines.append(f"&bull; <b>{left}</b> \u2194 <b>{right}</b>: <code style='font-weight: bold;'>{val:+.2f}</code> (Korelasi {dir_str} {strength})")
+
+        p_label = QLabel("<br>".join(p_lines))
+        p_label.setStyleSheet("font-size: 12px; color: #1E293B; line-height: 1.5;")
+        layout.addWidget(p_label)
+
+        if high_corr_found:
+            mc_box = QLabel(
+                "<b>Peringatan Multikolinearitas:</b> Ditemukan korelasi sangat kuat (|r| > 0.85). "
+                "Fitur dengan redundansi tinggi dapat mendistorsi koefisien regresi. "
+                "Pertimbangkan Feature Selection saat tahap Feature Engineering."
+            )
+            mc_box.setStyleSheet("background: #FFFBF0; border: 1px solid #F5DDA6; border-radius: 6px; padding: 8px 12px; font-size: 11px; color: #C27D1A;")
+            mc_box.setWordWrap(True)
+            layout.addWidget(mc_box)
+        else:
+            mc_box = QLabel("<b>Multicollinearity Check:</b> Tidak ditemukan multikolinearitas ekstrem (|r| > 0.85). Fitur numerik relatif independen.")
+            mc_box.setStyleSheet("background: #EAF7F0; border: 1px solid #D3EFDF; border-radius: 6px; padding: 8px 12px; font-size: 11px; color: #2C9B68;")
+            mc_box.setWordWrap(True)
+            layout.addWidget(mc_box)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 06: DATASET VERSIONS & RESEARCH TRAIL
+    # ---------------------------------------------------------
+
+    def add_versioning_section(self):
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+
+        if vm is None or project_id is None:
+            return
+
+        versions = vm.list_versions(project_id)
+        if not versions:
+            return
+
+        current_ver = vm.get_current_version(project_id)
+        trail = vm.get_trail(project_id)
+
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 06",
+            "Dataset Versions & Research Trail",
+            "Sistem pelacakan riwayat versi dataset yang immutable dan reproducible.",
+            badge_text="Reproducible Trail",
+            badge_style="success",
+        )
+
+        curr_num = current_ver.version if current_ver else 0
+        curr_label = current_ver.label if current_ver else "Raw Dataset"
+        curr_rows = current_ver.row_count if (current_ver and current_ver.row_count is not None) else len(self.main_window.current_dataset)
+        curr_cols = current_ver.column_count if (current_ver and current_ver.column_count is not None) else len(self.main_window.current_dataset.columns)
+
+        status_badge = QLabel(
+            f"<b>Versi Aktif:</b> <span style='color: #2C9B68; font-weight: bold;'>v{curr_num} — {curr_label}</span> "
+            f"({curr_rows:,} baris × {curr_cols} kolom) &nbsp;&bull;&nbsp; "
+            f"<span style='color: #4F8CFF; font-weight: 600;'>Original (v0) Immutable</span>"
+        )
+        status_badge.setObjectName("cardDescription")
+        layout.addWidget(status_badge)
+
+        # Action Buttons (Quick Data Prep)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+
+        clean_dup_btn = QPushButton("Hapus Duplikat (Buat Versi Baru)")
+        clean_dup_btn.setObjectName("secondaryButton")
+        clean_dup_btn.clicked.connect(self._handle_remove_duplicates)
+        action_row.addWidget(clean_dup_btn)
+
+        action_row.addStretch()
+        layout.addLayout(action_row)
+
+        # Versions Table
+        table_title = QLabel("Riwayat Versi Dataset:")
+        table_title.setStyleSheet("font-weight: bold; margin-top: 4px; color: #1C2B40;")
+        layout.addWidget(table_title)
+
+        table = QTableWidget()
+        table.setColumnCount(6)
+        table.setHorizontalHeaderLabels([
+            "Versi", "Label", "Baris", "Kolom", "Status", "Aksi"
+        ])
+        table.setRowCount(len(versions))
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        for row_idx, ver in enumerate(versions):
+            v_item = QTableWidgetItem(f"v{ver.version}")
+            v_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 0, v_item)
+
+            table.setItem(row_idx, 1, QTableWidgetItem(str(ver.label)))
+
+            r_item = QTableWidgetItem(f"{ver.row_count:,}" if ver.row_count is not None else "—")
+            r_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 2, r_item)
+
+            c_item = QTableWidgetItem(f"{ver.column_count}" if ver.column_count is not None else "—")
+            c_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 3, c_item)
+
+            status_str = "Aktif" if ver.is_current else "Arsip"
+            s_item = QTableWidgetItem(status_str)
+            s_item.setTextAlignment(Qt.AlignCenter)
+            table.setItem(row_idx, 4, s_item)
+
+            if not ver.is_current:
+                target_v = ver.version
+                rollback_btn = QPushButton(f"Rollback ke v{target_v}")
+                rollback_btn.setObjectName("secondaryButton")
+                rollback_btn.clicked.connect(lambda _, v=target_v: self._handle_rollback(v))
+                table.setCellWidget(row_idx, 5, rollback_btn)
+            else:
+                curr_item = QTableWidgetItem("Versi Saat Ini")
+                curr_item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row_idx, 5, curr_item)
+
+        table.setFixedHeight(min(170, 38 + len(versions) * 32))
+        layout.addWidget(table)
+
+        # Research Trail Timeline Log
+        if trail:
+            trail_title = QLabel("Research Trail (Audit Log Transformasi):")
+            trail_title.setStyleSheet("font-weight: bold; margin-top: 8px; color: #1C2B40;")
+            layout.addWidget(trail_title)
+
+            trail_box = QTextEdit()
+            trail_box.setReadOnly(True)
+            trail_box.setFixedHeight(min(140, 35 + len(trail) * 32))
+
+            lines = []
+            for t in trail:
+                impact_parts = [f"{k}: {v}" for k, v in t.impact.items()] if t.impact else []
+                impact_str = ", ".join(impact_parts) if impact_parts else "ok"
+                desc_str = f" | Catatan: {t.description}" if t.description else ""
+                lines.append(
+                    f"&bull; v{t.from_version} \u2192 v{t.to_version} | Operasi: {t.operation.upper()} | Dampak: [{impact_str}]{desc_str}"
+                )
+            trail_box.setText("\n".join(lines))
+            layout.addWidget(trail_box)
+
+        self.result_layout.addWidget(card)
+
+    # ---------------------------------------------------------
+    # CELL 07: AI RESEARCH INTERPRETATION
+    # ---------------------------------------------------------
+
+    def add_cell_gemini(self, result):
+        card, layout = self._create_cell_frame(
+            "ANALYSIS CELL 07",
+            "AI Research Interpretation",
+            "Program menghitung, AI menjelaskan: Narasi interpretasi akademis hasil analisis dataset.",
+            badge_text="Menyusun Narasi...",
+            badge_style="info",
+        )
+        self._gemini_badge = getattr(card, "status_badge", None)
+
+        self._gemini_label = QLabel("Sedang menyusun interpretasi akademis berdasarkan fakta dataset...")
+        self._gemini_label.setObjectName("analysisContent")
+        self._gemini_label.setWordWrap(True)
+        layout.addWidget(self._gemini_label)
+
+        # Action row for API key configuration (optional)
+        cfg_row = QHBoxLayout()
+        cfg_row.setSpacing(10)
+
+        key_btn = QPushButton("Atur API Key (Opsional)")
+        key_btn.setObjectName("secondaryButton")
+        key_btn.setStyleSheet("font-size: 10px; padding: 2px 10px; min-height: 26px;")
+        key_btn.clicked.connect(self._handle_configure_gemini_key)
+        cfg_row.addWidget(key_btn)
+
+        status_note = QLabel(
+            "<span style='color: #8492A5; font-size: 10px;'>"
+            "Aplikasi menggunakan Hybrid Engine: otomatis beralih ke mesin lokal jika offline atau limit."
+            "</span>"
+        )
+        cfg_row.addWidget(status_note)
+        cfg_row.addStretch()
+        layout.addLayout(cfg_row)
+
+        self._start_gemini_explanation(result)
+        self.result_layout.addWidget(card)
+
+    def _handle_configure_gemini_key(self):
+        current_key = get_saved_api_key() or ""
+        mask_key = current_key[:8] + "..." if len(current_key) > 8 else (current_key or "(Belum diatur)")
+        new_key, ok = QInputDialog.getText(
+            self,
+            "Pengaturan Gemini API Key",
+            f"Status API Key saat ini: {mask_key}\n\n"
+            "Masukkan Gemini API Key baru (opsional, kosongkan untuk menggunakan Local Engine):",
+            QLineEdit.Normal,
+            "",
+        )
+        if ok:
+            save_api_key(new_key.strip())
+            QMessageBox.information(
+                self,
+                "Pengaturan Disimpan",
+                "API Key berhasil disimpan!\n\n"
+                "Aplikasi akan menggunakannya untuk analisis berikutnya dengan auto-fallback lokal jika terkena limit."
+            )
+
+    # ---------------------------------------------------------
+    # QUICK DATA PREP HANDLERS (STAGE 5 & VERSIONING)
+    # ---------------------------------------------------------
+
+    def _handle_impute_missing(self):
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+        df = self.main_window.current_dataset
+
+        if vm is None or project_id is None or df is None:
+            return
+
+        missing_total = int(df.isna().sum().sum())
+        if missing_total == 0:
+            QMessageBox.information(
+                self,
+                "Missing Values",
+                "Dataset pada versi aktif saat ini sudah lengkap (0 nilai kosong)."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Konfirmasi Imputasi Missing Values",
+            f"Ditemukan {missing_total:,} nilai kosong pada dataset.\n\n"
+            f"Sistem akan menerapkan:\n"
+            f"• Median untuk kolom numerik\n"
+            f"• Modus (kategori terbanyak) untuk kolom non-numerik\n\n"
+            f"Versi baru akan dibuat di Research Trail, dan versi original (v0) tetap aman.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        df_imputed = df.copy()
+        imputed_cols = []
+        for col in df_imputed.columns:
+            if df_imputed[col].isna().sum() > 0:
+                if pd.api.types.is_numeric_dtype(df_imputed[col]):
+                    val = df_imputed[col].median()
+                    df_imputed[col] = df_imputed[col].fillna(val)
+                    imputed_cols.append(f"{col} (median: {val})")
+                else:
+                    mode_series = df_imputed[col].mode(dropna=True)
+                    val = mode_series.iloc[0] if not mode_series.empty else "Missing"
+                    df_imputed[col] = df_imputed[col].fillna(val)
+                    imputed_cols.append(f"{col} (modus: {val})")
+
+        new_ver = vm.create_version(
+            project_id=project_id,
+            dataframe=df_imputed,
+            operation="impute_missing",
+            parameters={"method": "median_for_numeric_mode_for_categorical"},
+            impact={
+                "missing_before": missing_total,
+                "missing_after": int(df_imputed.isna().sum().sum()),
+                "imputed_columns": len(imputed_cols),
+            },
+            description=f"Imputasi {missing_total:,} nilai kosong pada {len(imputed_cols)} kolom",
+            label="Missing Values Imputed",
+        )
+
+        self.main_window.current_dataset = df_imputed
+        self.main_window.dashboard.update_dataset(
+            df_imputed,
+            self.main_window._current_filename(),
+        )
+        self.run_analysis()
+
+        QMessageBox.information(
+            self,
+            "Sukses Imputasi",
+            f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
+            f"Seluruh nilai kosong telah berhasil diimputasi."
+        )
+
+    def _handle_drop_missing(self):
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+        df = self.main_window.current_dataset
+
+        if vm is None or project_id is None or df is None:
+            return
+
+        rows_with_na = int(df.isna().any(axis=1).sum())
+        if rows_with_na == 0:
+            QMessageBox.information(
+                self,
+                "Missing Values",
+                "Dataset pada versi aktif saat ini sudah lengkap (0 baris kosong)."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Konfirmasi Drop Baris Missing",
+            f"Ditemukan {rows_with_na:,} baris yang memiliki nilai kosong.\n\n"
+            f"Apakah Anda ingin menghapus baris-baris tersebut?\n"
+            f"(Ukuran dataset akan berkurang dari {len(df):,} menjadi {len(df) - rows_with_na:,} baris)\n\n"
+            f"Versi original (v0) tetap aman dan tidak akan berubah.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        df_dropped = df.dropna()
+        new_ver = vm.create_version(
+            project_id=project_id,
+            dataframe=df_dropped,
+            operation="drop_missing_rows",
+            parameters={"how": "any"},
+            impact={
+                "rows_before": len(df),
+                "rows_after": len(df_dropped),
+                "rows_dropped": rows_with_na,
+            },
+            description=f"Drop {rows_with_na:,} baris yang memiliki missing value",
+            label="Dropped Missing Rows",
+        )
+
+        self.main_window.current_dataset = df_dropped
+        self.main_window.dashboard.update_dataset(
+            df_dropped,
+            self.main_window._current_filename(),
+        )
+        self.run_analysis()
+
+        QMessageBox.information(
+            self,
+            "Sukses",
+            f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
+            f"{rows_with_na:,} baris telah dihapus."
+        )
+
+    def _handle_remove_duplicates(self):
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+        df = self.main_window.current_dataset
+
+        if vm is None or project_id is None or df is None:
+            return
+
+        dup_count = int(df.duplicated().sum())
+        if dup_count == 0:
+            QMessageBox.information(
+                self,
+                "Duplikat",
+                "Dataset pada versi aktif saat ini sudah bersih dari duplikat (0 baris duplikat)."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Konfirmasi Hapus Duplikat",
+            f"Ditemukan {dup_count:,} baris duplikat.\n\n"
+            f"Apakah Anda ingin menghapus duplikat dan membuat versi baru di Research Trail?\n"
+            f"(Dataset original v0 tetap aman dan tidak akan berubah)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        df_cleaned = df.drop_duplicates()
+        new_ver = vm.create_version(
+            project_id=project_id,
+            dataframe=df_cleaned,
+            operation="remove_duplicates",
+            parameters={"keep": "first"},
+            impact={
+                "rows_before": len(df),
+                "rows_after": len(df_cleaned),
+                "rows_removed": dup_count,
+            },
+            description=f"Menghapus {dup_count:,} baris duplikat via UI",
+        )
+
+        self.main_window.current_dataset = df_cleaned
+        self.main_window.dashboard.update_dataset(
+            df_cleaned,
+            self.main_window._current_filename(),
+        )
+        self.run_analysis()
+
+        QMessageBox.information(
+            self,
+            "Sukses",
+            f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
+            f"{dup_count:,} baris duplikat telah dibersihkan."
+        )
+
+    def _handle_rollback(self, target_version: int):
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+
+        if vm is None or project_id is None:
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Konfirmasi Rollback",
+            f"Apakah Anda ingin rollback versi aktif ke v{target_version}?\n\n"
+            f"Versi lain tidak akan dihapus dan history Research Trail tetap tersimpan.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        rolled = vm.rollback_to(project_id, target_version)
+        restored_df = vm.load_dataframe(project_id, target_version)
+
+        self.main_window.current_dataset = restored_df
+        self.main_window.dashboard.update_dataset(
+            restored_df,
+            self.main_window._current_filename(),
+        )
+        self.run_analysis()
+
+        QMessageBox.information(
+            self,
+            "Rollback Berhasil",
+            f"Dataset berhasil dikembalikan ke versi aktif: v{rolled.version} ({rolled.label})."
+        )
+
 
 class InfoCard(QFrame):
 
@@ -2226,6 +3143,14 @@ class MethodCard(QFrame):
             score_text = f"F1 {float(score):.2f}%"
         elif score_type == "r2_score":
             score_text = f"R² {float(score):.4f}"
+        elif score_type == "accuracy":
+            score_text = f"Acc {float(score):.2f}%"
+        elif score_type == "cluster_score":
+            score_text = f"Cluster Score {float(score):.1f}"
+        elif score_type == "silhouette_score":
+            score_text = f"Silhouette {float(score):.3f}"
+        elif score_type == "score_spread":
+            score_text = f"Spread {float(score):.4f}"
         else:
             score_text = f"{score}% match"
 
@@ -2430,6 +3355,37 @@ class MethodDetailCard(QFrame):
         )
 
         # --------------------------------------------------
+        # EMPIRICAL METRICS (if evaluated)
+        # --------------------------------------------------
+        metrics = method.get("metrics", {})
+        if metrics:
+            metrics_title = QLabel(
+                "Evaluation Metrics"
+            )
+            metrics_title.setObjectName(
+                "cardLabel"
+            )
+            layout.addWidget(
+                metrics_title
+            )
+
+            for key, val in metrics.items():
+                label_text = str(key).replace("_", " ").title()
+                if isinstance(val, float):
+                    val_str = f"{val:.4f}" if abs(val) < 10 else f"{val:.2f}"
+                else:
+                    val_str = str(val)
+                lbl = QLabel(
+                    f"• {label_text}: {val_str}"
+                )
+                lbl.setObjectName(
+                    "cardDescription"
+                )
+                layout.addWidget(
+                    lbl
+                )
+
+        # --------------------------------------------------
         # DESCRIPTION
         # --------------------------------------------------
 
@@ -2608,7 +3564,9 @@ class MethodDetailCard(QFrame):
             meta
         )
 
+
 class MLIntelligencePage(QWidget):
+
 
     """
     Halaman ML Intelligence.
@@ -6592,8 +7550,15 @@ class MainWindow(QMainWindow):
         self.outlier_analyzer = OutlierAnalyzer()
         self.correlation_analyzer = CorrelationAnalyzer()
         self.fingerprint_analyzer = DatasetFingerprint()
+        self.quality_diagnoser = DataQualityDiagnoser()
+
+        self.database = Database()
+        self.repository = ProjectRepository(self.database)
+        self.version_manager = DatasetVersionManager(self.database)
+        self.current_project_id = None
 
         self._build_window()
+
 
     # =========================================================
     # STYLESHEET
@@ -6993,7 +7958,43 @@ class MainWindow(QMainWindow):
         if dataframe is None:
             raise ValueError("No dataset is currently loaded.")
 
+        # Pastikan project dan v0 versioning tercatat
+        if self.current_file_path and Path(self.current_file_path).exists():
+            if self.current_project_id is None:
+                filename = Path(self.current_file_path).name
+                self.current_project_id = self.repository.create_project(
+                    name=filename,
+                    dataset_name=filename,
+                    dataset_path=str(self.current_file_path),
+                )
+            if not self.version_manager.has_versions(self.current_project_id):
+                try:
+                    self.version_manager.create_initial_version(
+                        self.current_project_id,
+                        self.current_file_path,
+                    )
+                except Exception as ver_err:
+                    print(f"Warning: create_initial_version: {ver_err}")
+        else:
+            # Fallback: dataset dimuat tanpa file path (misal HuggingFace)
+            if self.current_project_id is None:
+                fallback_name = self._current_filename() or "dataset"
+                self.current_project_id = self.repository.create_project(
+                    name=fallback_name,
+                    dataset_name=fallback_name,
+                    dataset_path="in-memory",
+                )
+            if not self.version_manager.has_versions(self.current_project_id):
+                try:
+                    self.version_manager.create_initial_version(
+                        self.current_project_id,
+                        dataframe=dataframe,
+                    )
+                except Exception as ver_err:
+                    print(f"Warning: create_initial_version (in-memory): {ver_err}")
+
         jobs = {
+
             "profile": (self.profiler.profile, dataframe),
             "statistics": (self.statistics.analyze, dataframe),
             "missing_values": (self.missing_analyzer.analyze, dataframe),
@@ -7013,6 +8014,20 @@ class MainWindow(QMainWindow):
             }
             for name, future in futures.items():
                 result[name] = future.result()
+
+        # Stage 3: Data Quality Diagnosis (4 Pillars)
+        try:
+            result["data_quality"] = self.quality_diagnoser.diagnose(
+                dataframe=dataframe,
+                profile=result.get("profile"),
+                missing_values=result.get("missing_values"),
+                duplicates=result.get("duplicates"),
+                outliers=result.get("outliers"),
+                fingerprint=result.get("fingerprint"),
+            )
+        except Exception as dq_err:
+            print(f"Warning: data_quality diagnosis error: {dq_err}")
+            result["data_quality"] = []
 
         self.analysis_result = result
 

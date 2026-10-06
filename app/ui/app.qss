@@ -885,6 +885,33 @@ QWidget {
     color: #F8FBFF;
 }
 
+#secondaryButton {
+    background: #FFFFFF;
+    color: #3577E5;
+    border: 1px solid #CFE3FF;
+    border-radius: 8px;
+    min-height: 32px;
+    padding: 0 14px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+#secondaryButton:hover {
+    background: #F1F7FF;
+    border-color: #B8D6FF;
+    color: #245BAF;
+}
+
+#secondaryButton:pressed {
+    background: #E5F1FF;
+}
+
+#secondaryButton:disabled {
+    background: #F8FAFD;
+    border-color: #E2ECF7;
+    color: #A0B2C6;
+}
+
 #quickActionButton {
     background: transparent;
     border: none;

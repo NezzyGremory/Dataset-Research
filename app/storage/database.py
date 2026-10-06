@@ -154,6 +154,83 @@ class Database:
                 CREATE INDEX IF NOT EXISTS
                     idx_research_project_id
                 ON research_results(project_id);
+
+                -- ============================================
+                -- DATASET VERSIONING
+                -- ============================================
+
+                CREATE TABLE IF NOT EXISTS dataset_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+
+                    version INTEGER NOT NULL DEFAULT 0,
+
+                    label TEXT NOT NULL
+                        DEFAULT 'Raw Dataset',
+
+                    file_path TEXT NOT NULL,
+
+                    row_count INTEGER,
+                    column_count INTEGER,
+                    columns_json TEXT,
+                    dtypes_json TEXT,
+                    file_hash TEXT,
+                    file_size_bytes INTEGER,
+
+                    is_current INTEGER NOT NULL DEFAULT 0,
+
+                    created_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (project_id)
+                        REFERENCES projects(id)
+                        ON DELETE CASCADE,
+
+                    UNIQUE(project_id, version)
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_versions_project
+                ON dataset_versions(project_id, version);
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_versions_current
+                ON dataset_versions(project_id, is_current);
+
+                -- ============================================
+                -- TRANSFORMATION TRAIL
+                -- ============================================
+
+                CREATE TABLE IF NOT EXISTS transformation_trail (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL,
+
+                    from_version INTEGER NOT NULL,
+                    to_version INTEGER NOT NULL,
+
+                    operation TEXT NOT NULL,
+
+                    parameters_json TEXT NOT NULL
+                        DEFAULT '{}',
+
+                    impact_json TEXT NOT NULL
+                        DEFAULT '{}',
+
+                    description TEXT,
+
+                    created_at TEXT NOT NULL
+                        DEFAULT CURRENT_TIMESTAMP,
+
+                    FOREIGN KEY (project_id)
+                        REFERENCES projects(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS
+                    idx_trail_project
+                ON transformation_trail(
+                    project_id, from_version
+                );
                 """
             )
 

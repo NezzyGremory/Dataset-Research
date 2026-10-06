@@ -2,6 +2,9 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from app.core.config import init_environment
+init_environment()
+
 from app.ui.main_window import MainWindow
 
 

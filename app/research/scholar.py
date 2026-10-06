@@ -25,9 +25,13 @@ class ScholarClient:
         timeout: float = 20.0,
         hl: str = "en",
     ):
+        from app.core.config import init_environment
+        init_environment()
+
         self.api_key = (
             api_key
-            or os.getenv("2cc32645e203e961f59adfbbec566c80a5b1a3e0702b6e489517b45cd344ea95")
+            or os.getenv("SERPAPI_API_KEY")
+            or os.getenv("SERPAPI_KEY")
             or os.getenv("2cc32645e203e961f59adfbbec566c80a5b1a3e0702b6e489517b45cd344ea95")
         )
         self.timeout = timeout

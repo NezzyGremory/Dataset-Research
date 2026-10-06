@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from app.ml.method_info import get_method_info
+from app.ml.method_info import get_method_info, get_methods_for_task
 
 
 class MethodRecommender:
@@ -12,59 +12,114 @@ class MethodRecommender:
         self.base_scores = {
             "binary_classification": {
                 "random_forest_classifier": 92,
+                "xgboost_classifier": 91,
+                "lightgbm_classifier": 90,
+                "catboost_classifier": 90,
+                "gradient_boosting_classifier": 88,
+                "extra_trees_classifier": 87,
+                "hist_gradient_boosting_classifier": 86,
                 "logistic_regression": 85,
+                "adaboost_classifier": 83,
                 "decision_tree_classifier": 82,
                 "svm_classifier": 81,
                 "knn_classifier": 75,
             },
             "multiclass_classification": {
                 "random_forest_classifier": 92,
+                "xgboost_classifier": 91,
+                "lightgbm_classifier": 90,
+                "catboost_classifier": 90,
+                "gradient_boosting_classifier": 88,
+                "extra_trees_classifier": 87,
+                "hist_gradient_boosting_classifier": 86,
                 "decision_tree_classifier": 82,
                 "svm_classifier": 81,
-                "knn_classifier": 75,
+                "adaboost_classifier": 83,
                 "logistic_regression": 78,
+                "knn_classifier": 75,
             },
             "regression": {
                 "random_forest_regressor": 92,
+                "xgboost_regressor": 91,
                 "gradient_boosting_regressor": 90,
+                "lightgbm_regressor": 90,
+                "catboost_regressor": 90,
+                "extra_trees_regressor": 87,
+                "hist_gradient_boosting_regressor": 86,
                 "linear_regression": 84,
+                "adaboost_regressor": 83,
+                "ridge_regression": 82,
+                "lasso_regression": 80,
                 "decision_tree_regressor": 80,
             },
             "clustering": {
                 "kmeans": 90,
+                "minibatch_kmeans": 85,
                 "dbscan": 82,
+                "gaussian_mixture": 80,
                 "agglomerative_clustering": 78,
+                "birch": 76,
             },
             "anomaly_detection": {
                 "isolation_forest": 92,
                 "local_outlier_factor": 82,
                 "one_class_svm": 79,
+                "elliptic_envelope": 75,
             },
         }
 
-    def recommend(self, ml_result: Dict[str, Any] | None) -> Dict[str, Any]:
-        """Generate safe recommendations even when no primary task is detected."""
-        if not isinstance(ml_result, dict):
-            ml_result = {}
+    def recommend(
+        self,
+        task_or_result: Dict[str, Any] | None,
+        fingerprint: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate recommendations even when no primary task is detected.
 
-        primary_task = ml_result.get("primary_task")
+        Supports both:
+        - recommend(ml_result)
+        - recommend(task_result, fingerprint)
+        """
+        if not isinstance(task_or_result, dict):
+            task_or_result = {}
+
+        primary_task = task_or_result.get("primary_task")
         if not isinstance(primary_task, dict):
-            primary_task = self._fallback_primary_task(ml_result)
+            primary_task = self._fallback_primary_task(task_or_result)
 
         task = str(primary_task.get("task") or "unknown_task")
         label = primary_task.get("label") or task
         target = primary_task.get("target")
 
-        dataset = ml_result.get("dataset")
+        # Extract dataset dimensions from task_or_result or fingerprint
+        dataset = task_or_result.get("dataset")
         if not isinstance(dataset, dict):
             dataset = {}
 
-        rows = self._safe_number(dataset.get("rows"), ml_result.get("rows", 0))
-        columns = self._safe_number(dataset.get("columns"), ml_result.get("columns", 0))
+        rows = self._safe_number(dataset.get("rows"), task_or_result.get("rows", 0))
+        columns = self._safe_number(dataset.get("columns"), task_or_result.get("columns", 0))
         numeric_features = self._safe_number(
             dataset.get("numeric_features"),
-            ml_result.get("numeric_features", 0),
+            task_or_result.get("numeric_features", 0),
         )
+
+        if fingerprint and isinstance(fingerprint, dict):
+            rep = fingerprint.get("representation", fingerprint)
+            if isinstance(rep, dict):
+                if not rows:
+                    rows = self._safe_number(rep.get("rows"), 0)
+                if not columns:
+                    columns = self._safe_number(rep.get("columns"), 0)
+                if not numeric_features:
+                    chars = rep.get("characteristics", {})
+                    if isinstance(chars, dict):
+                        numeric_features = self._safe_number(chars.get("numeric_columns"), 0)
+                    if not numeric_features:
+                        sig = rep.get("column_signature", [])
+                        if isinstance(sig, list):
+                            numeric_features = sum(
+                                1 for c in sig if isinstance(c, dict) and c.get("semantic_type") == "numeric"
+                            )
 
         method_scores = self.base_scores.get(task, {})
         recommendations: List[Dict[str, Any]] = []
@@ -87,7 +142,7 @@ class MethodRecommender:
                 score += 3
                 reasons.append("Metode sesuai untuk dataset kecil hingga menengah.")
 
-            if numeric_features >= 10 and info.get("high_dimensional"):
+            if numeric_features >= 10 and info.get("high_dimensional", True):
                 adjustments["many_numeric_features"] = 3
                 score += 3
                 reasons.append("Dataset memiliki banyak fitur numerik.")
@@ -97,7 +152,7 @@ class MethodRecommender:
                 score -= 1
                 reasons.append("Feature scaling diperlukan sebelum training.")
 
-            if info.get("interpretability") == "high":
+            if info.get("interpretability") == "High":
                 reasons.append("Mudah diinterpretasikan.")
 
             reasons.insert(0, f"Metode sesuai dengan task {label}.")
@@ -150,6 +205,7 @@ class MethodRecommender:
             "status": "RECOMMENDATION",
             "primary_task": primary_task if primary_task else None,
             "recommendations": recommendations,
+            "methods": recommendations,  # Alias for test backward compatibility
             "recommendation_count": len(recommendations),
             "message": message,
         }
@@ -158,6 +214,9 @@ class MethodRecommender:
         """Recover a usable primary task from the task list if needed."""
         tasks = ml_result.get("tasks")
         if not isinstance(tasks, list):
+            # Check if ml_result is a task dict itself
+            if ml_result.get("task"):
+                return ml_result
             return None
 
         valid = [task for task in tasks if isinstance(task, dict) and task.get("task")]

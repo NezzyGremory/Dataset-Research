@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, List, Optional
+from pathlib import Path
 
 import pandas as pd
 
 from app.research.intelligence import ResearchIntelligenceEngine
 from app.storage.project_repository import ProjectRepository
+from app.storage.version_manager import DatasetVersionManager
+from app.storage.version_models import DatasetVersion, TransformationRecord
 
 
 class ResearchService:
@@ -14,6 +17,7 @@ class ResearchService:
 
     Tugas utama:
     - Membuat project
+    - Mengelola dataset versioning & research trail
     - Menjalankan Research Intelligence
     - Menyimpan hasil research ke SQLite
     - Mengambil project beserta hasil research
@@ -26,9 +30,12 @@ class ResearchService:
         self,
         engine: ResearchIntelligenceEngine,
         repository: ProjectRepository,
+        version_manager: Optional[DatasetVersionManager] = None,
     ):
         self.engine = engine
         self.repository = repository
+        self.version_manager = version_manager
+
 
     # ==========================================================
     # PROJECT
@@ -121,13 +128,19 @@ class ResearchService:
         project_id: int,
     ) -> bool:
         """
-        Menghapus project beserta seluruh data research
-        dan paper yang terhubung.
+        Menghapus project beserta seluruh data research,
+        paper, dataset version, dan trail yang terhubung.
         """
+
+        if self.version_manager is not None:
+            self.version_manager.delete_project_versions(
+                project_id
+            )
 
         return self.repository.delete_project(
             project_id
         )
+
 
     # ==========================================================
     # RESEARCH
@@ -280,3 +293,94 @@ class ResearchService:
         return self.repository.count_papers(
             project_id
         )
+
+    # ==========================================================
+    # DATASET VERSIONING
+    # ==========================================================
+
+    def create_initial_dataset_version(
+        self,
+        project_id: int,
+        csv_path: str | Path | None = None,
+        dataframe: pd.DataFrame | None = None,
+    ) -> Optional[DatasetVersion]:
+        """
+        Membuat versi v0 (raw immutable) dari dataset.
+        """
+        if self.version_manager is None:
+            return None
+        return self.version_manager.create_initial_version(
+            project_id=project_id,
+            csv_path=csv_path,
+            dataframe=dataframe,
+        )
+
+    def create_dataset_version(
+        self,
+        project_id: int,
+        dataframe: pd.DataFrame,
+        operation: str,
+        parameters: Optional[Dict[str, Any]] = None,
+        impact: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        label: Optional[str] = None,
+    ) -> Optional[DatasetVersion]:
+        """
+        Membuat versi baru setelah transformasi data.
+        """
+        if self.version_manager is None:
+            return None
+        return self.version_manager.create_version(
+            project_id=project_id,
+            dataframe=dataframe,
+            operation=operation,
+            parameters=parameters,
+            impact=impact,
+            description=description,
+            label=label,
+        )
+
+    def list_dataset_versions(
+        self,
+        project_id: int,
+    ) -> List[DatasetVersion]:
+        """
+        Menampilkan seluruh versi dataset project.
+        """
+        if self.version_manager is None:
+            return []
+        return self.version_manager.list_versions(project_id)
+
+    def get_dataset_trail(
+        self,
+        project_id: int,
+    ) -> List[TransformationRecord]:
+        """
+        Menampilkan transformation trail project.
+        """
+        if self.version_manager is None:
+            return []
+        return self.version_manager.get_trail(project_id)
+
+    def load_current_dataset(
+        self,
+        project_id: int,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Memuat DataFrame dari versi dataset aktif saat ini.
+        """
+        if self.version_manager is None:
+            return None
+        return self.version_manager.load_current_dataframe(project_id)
+
+    def rollback_dataset(
+        self,
+        project_id: int,
+        version: int,
+    ) -> Optional[DatasetVersion]:
+        """
+        Rollback versi aktif ke versi tertentu.
+        """
+        if self.version_manager is None:
+            return None
+        return self.version_manager.rollback_to(project_id, version)

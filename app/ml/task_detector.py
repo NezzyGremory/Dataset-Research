@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
+
+from app.ml.target_detector import MLTargetDetector
 
 
 class MLTaskDetector:
@@ -37,6 +39,9 @@ class MLTaskDetector:
         "id", "uuid", "identifier", "index", "record", "number", "no",
     }
 
+    def __init__(self, target_detector: Optional[MLTargetDetector] = None) -> None:
+        self.target_detector = target_detector or MLTargetDetector()
+
     def detect(
         self,
         fingerprint: dict[str, Any] | None,
@@ -62,9 +67,12 @@ class MLTaskDetector:
             representation.get("target_candidates")
         )
 
-        # Rebuild candidates from actual dataframe structure when fingerprint
-        # candidates are missing or unusable.
-        inferred = self._infer_target_candidates(columns, dataframe)
+        # Delegate target inference to MLTargetDetector
+        inferred = self.target_detector.detect(
+            dataframe=dataframe,
+            columns_meta=columns,
+            fingerprint=fingerprint,
+        )
         if inferred:
             if target_candidates:
                 target_candidates = self._merge_target_candidates(
@@ -326,6 +334,7 @@ class MLTaskDetector:
                 candidate_score = self._candidate_score(candidate)
                 task["target_confidence"] = round(candidate_score, 2)
                 task["confidence"] = int(round(min(task["score"], candidate_score or task["score"]))) if candidate_score else task["score"]
+                task["score"] = task["confidence"]
                 task["reasons"].append(f"Keyakinan kandidat target: {candidate_score:.0f}%.")
                 return task
         return None
@@ -388,7 +397,10 @@ class MLTaskDetector:
             and t.get("task") in {"binary_classification", "multiclass_classification", "regression"}
         ]
         if supervised:
-            return max(supervised, key=self._safe_score)
+            top_supervised = max(supervised, key=self._safe_score)
+            if self._safe_score(top_supervised) >= 40:
+                return top_supervised
+            return max(tasks, key=self._safe_score)
         time_series = [t for t in tasks if t.get("task") == "time_series_forecasting"]
         if time_series:
             return max(time_series, key=self._safe_score)

@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.ml.evaluation import MLEvaluator
+from app.ml.method_info import get_method_info
 from app.ml.method_recommender import MethodRecommender
 from app.ml.task_detector import MLTaskDetector
 
@@ -103,30 +104,37 @@ class MLIntelligenceEngine:
             "binary_classification",
             "multiclass_classification",
             "regression",
+            "clustering",
+            "anomaly_detection",
         }
 
         # ---------------------------------------------------------
         # REAL TRAINING FIRST
         # ---------------------------------------------------------
-        if evaluate_models and target and task in supported_tasks:
-            try:
-                # methods=None is deliberate:
-                # evaluate the COMPLETE candidate set first.
-                # The evaluator performs K-Fold / Stratified K-Fold when
-                # enough data is available and ranks the evaluated results.
-                evaluation = self.evaluator.evaluate(
-                    dataframe=dataframe,
-                    target=str(target),
-                    task=str(task),
-                    methods=None,
-                )
-            except Exception as exc:
-                evaluation = {
-                    "status": "ERROR",
-                    "results": [],
-                    "result_count": 0,
-                    "message": f"Evaluation gagal: {exc}",
-                }
+        unsupervised_tasks = {"clustering", "anomaly_detection"}
+
+        if evaluate_models and task in supported_tasks:
+            is_unsupervised = task in unsupervised_tasks
+            can_evaluate = is_unsupervised or (target is not None)
+
+            if can_evaluate:
+                try:
+                    eval_kwargs: Dict[str, Any] = {
+                        "dataframe": dataframe,
+                        "task": str(task),
+                        "methods": None,
+                    }
+                    if not is_unsupervised:
+                        eval_kwargs["target"] = str(target)
+
+                    evaluation = self.evaluator.evaluate(**eval_kwargs)
+                except Exception as exc:
+                    evaluation = {
+                        "status": "ERROR",
+                        "results": [],
+                        "result_count": 0,
+                        "message": f"Evaluation gagal: {exc}",
+                    }
 
         # The recommendation list is created FROM empirical evaluation.
         empirical_recommendations = self._build_empirical_recommendation(
@@ -183,7 +191,13 @@ class MLIntelligenceEngine:
             "transparency": {
                 "task_detection": "ESTIMATION",
                 "method_knowledge": "FACT",
+                "method_recommendation": "RECOMMENDATION",
                 "model_training": (
+                    "EMPIRICAL"
+                    if evaluation.get("result_count", 0) > 0
+                    else "NOT_AVAILABLE"
+                ),
+                "model_evaluation": (
                     "EMPIRICAL"
                     if evaluation.get("result_count", 0) > 0
                     else "NOT_AVAILABLE"
@@ -227,7 +241,7 @@ class MLIntelligenceEngine:
             if not method_id:
                 continue
 
-            info = knowledge_map.get(method_id, {})
+            info = knowledge_map.get(method_id) or get_method_info(method_id) or {}
             metrics = result.get("metrics", {}) or {}
 
             if "f1_score" in metrics:
@@ -236,6 +250,15 @@ class MLIntelligenceEngine:
             elif "r2_score" in metrics:
                 score_type = "r2_score"
                 score = float(metrics.get("r2_score", 0.0))
+            elif "cluster_score" in metrics:
+                score_type = "cluster_score"
+                score = float(metrics.get("cluster_score", 0.0))
+            elif "silhouette_score" in metrics:
+                score_type = "silhouette_score"
+                score = float(metrics.get("silhouette_score", 0.0))
+            elif "score_spread" in metrics:
+                score_type = "score_spread"
+                score = float(metrics.get("score_spread", 0.0))
             else:
                 score_type = evaluation.get(
                     "ranking_metric",
@@ -264,6 +287,31 @@ class MLIntelligenceEngine:
                     "Variasi metric antar fold: "
                     f"{result.get('stability')}."
                 )
+
+            # Build knowledge_base nested dict from knowledge info
+            knowledge_base = {
+                "description": info.get("description", ""),
+                "strengths": info.get("strengths", []),
+                "limitations": info.get("limitations", []),
+                "preprocessing": info.get("preprocessing", []),
+                "interpretability": info.get(
+                    "interpretability",
+                    "unknown",
+                ),
+                "scaling_required": bool(
+                    info.get("scaling_required", False)
+                ),
+                "nonlinear": bool(
+                    info.get("nonlinear", False)
+                ),
+                "small_data": bool(
+                    info.get("small_data", False)
+                ),
+                "large_data": bool(
+                    info.get("large_data", False)
+                ),
+                "score": info.get("score"),
+            }
 
             output.append(
                 {
@@ -305,6 +353,8 @@ class MLIntelligenceEngine:
                         info.get("large_data", False)
                     ),
                     "reasons": reasons,
+                    # Knowledge base as nested dict for test compatibility
+                    "knowledge_base": knowledge_base,
                     # Preserved only as background knowledge.
                     "knowledge_base_score": info.get("score"),
                     "empirical": True,
@@ -376,6 +426,12 @@ class MLIntelligenceEngine:
             "f1_score": "F1 Score",
             "r2_score": "R²",
             "accuracy": "Accuracy",
+            "cluster_score": "Cluster Score",
+            "silhouette_score": "Silhouette Score",
+            "calinski_harabasz": "Calinski-Harabasz",
+            "davies_bouldin": "Davies-Bouldin",
+            "score_spread": "Score Spread",
+            "anomaly_ratio": "Anomaly Ratio",
         }
         return names.get(value, str(value).replace("_", " ").title())
 
@@ -397,7 +453,21 @@ class MLIntelligenceEngine:
     @staticmethod
     def _category(method_id: str) -> str:
         method_id = str(method_id)
-        if "regressor" in method_id:
+        clustering_ids = {
+            "kmeans", "minibatch_kmeans", "agglomerative_clustering",
+            "dbscan", "hdbscan", "optics", "gaussian_mixture",
+            "spectral_clustering", "birch", "mean_shift",
+            "affinity_propagation",
+        }
+        anomaly_ids = {
+            "isolation_forest", "local_outlier_factor",
+            "one_class_svm", "elliptic_envelope",
+        }
+        if method_id in clustering_ids:
+            return "Clustering"
+        if method_id in anomaly_ids:
+            return "Anomaly Detection"
+        if "regressor" in method_id or "regression" in method_id:
             return "Regression"
         return "Classification"
 

@@ -3,3 +3,4 @@ pandas
 python-dotenv
 httpx
 scikit-learn
+pyarrow

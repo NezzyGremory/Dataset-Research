@@ -320,6 +320,11 @@ class ProjectRepository:
         if not papers and top_papers:
             papers = top_papers
 
+        if not papers and isinstance(result.get("ranking"), dict):
+            ranking_papers = result["ranking"].get("papers", [])
+            if isinstance(ranking_papers, list):
+                papers = ranking_papers
+
         # --------------------------------------------------------
         # Research Result
         # --------------------------------------------------------
