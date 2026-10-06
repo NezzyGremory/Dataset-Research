@@ -1,35 +1,29 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.research.crossref import CrossrefClient
 from app.research.deduplication import PaperDeduplicator
 from app.research.openalex import OpenAlexClient
 from app.research.paper import Paper
-from app.research.scholar import ScholarClient
 
 
 class AcademicSearchEngine:
-    """Multi-source academic search with graceful provider fallback.
-
-    OpenAlex and Crossref remain the default sources. Google Scholar is an
-    optional third source and is automatically used when a SerpApi key is
-    configured through the constructor or environment.
-    """
+    """Multi-source academic search using open-access academic providers (OpenAlex & Crossref)."""
 
     def __init__(
         self,
         email: Optional[str] = None,
         openalex: Optional[OpenAlexClient] = None,
         crossref: Optional[CrossrefClient] = None,
-        scholar: Optional[ScholarClient] = None,
+        scholar: Any = None,
         scholar_api_key: Optional[str] = None,
         deduplicator: Optional[PaperDeduplicator] = None,
+        **kwargs,
     ):
         self.openalex = openalex or OpenAlexClient(email=email)
         self.crossref = crossref or CrossrefClient(email=email)
-        self.scholar = scholar or ScholarClient(api_key=scholar_api_key)
         self.deduplicator = deduplicator or PaperDeduplicator()
 
     def search(
@@ -37,7 +31,7 @@ class AcademicSearchEngine:
         query: str,
         limit: int = 20,
         use_crossref: bool = True,
-        use_scholar: Optional[bool] = None,
+        **kwargs,
     ) -> Dict:
         if not query or not query.strip():
             return {
@@ -52,27 +46,14 @@ class AcademicSearchEngine:
 
         limit = max(1, min(limit, 100))
 
-        # None means: use Scholar automatically if a key is configured.
-        if use_scholar is None:
-            use_scholar = self.scholar.enabled
-
         all_papers: List[Paper] = []
         candidate_source_counts: Dict[str, int] = {}
         provider_status = {
             "OpenAlex": "ENABLED",
             "Crossref": "ENABLED" if use_crossref else "DISABLED",
-            "Google Scholar": (
-                "ENABLED"
-                if use_scholar and self.scholar.enabled
-                else "NOT_CONFIGURED"
-                if use_scholar
-                else "DISABLED"
-            ),
         }
 
-        # Collect candidates independently from each enabled provider.
-        # We intentionally collect up to `limit` from each source before
-        # deduplication so one provider does not crowd out the others.
+        # Collect candidates independently from OpenAlex and Crossref
         try:
             openalex_results = self.openalex.search(
                 query=query,
@@ -93,17 +74,6 @@ class AcademicSearchEngine:
                 candidate_source_counts["Crossref"] = len(crossref_results)
             except Exception:
                 provider_status["Crossref"] = "ERROR"
-
-        if use_scholar and self.scholar.enabled:
-            try:
-                scholar_results = self.scholar.search(
-                    query=query,
-                    rows=min(limit, 20),
-                )
-                all_papers.extend(scholar_results)
-                candidate_source_counts["Google Scholar"] = len(scholar_results)
-            except Exception:
-                provider_status["Google Scholar"] = "ERROR"
 
         unique_papers = self.deduplicator.deduplicate(all_papers)
         unique_papers = unique_papers[:limit]
