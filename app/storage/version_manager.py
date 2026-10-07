@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import shutil
 from pathlib import Path
@@ -63,15 +64,10 @@ class DatasetVersionManager:
         """
         Mengecek apakah engine parquet (pyarrow/fastparquet) tersedia.
         """
-        try:
-            import pyarrow  # noqa: F401
-            return True
-        except ImportError:
-            try:
-                import fastparquet  # noqa: F401
-                return True
-            except ImportError:
-                return False
+        return any(
+            importlib.util.find_spec(engine) is not None
+            for engine in ("pyarrow", "fastparquet")
+        )
 
     def _version_file(
         self,
