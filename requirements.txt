@@ -5,3 +5,4 @@ httpx
 scikit-learn
 pyarrow
 jinja2
+matplotlib

@@ -7,6 +7,8 @@ import sys
 import tempfile
 from typing import Any, Dict
 import pandas as pd
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt, QUrl, QObject, QThread, Signal
 from PySide6.QtGui import QPixmap, QDesktopServices
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QHeaderView,
     QInputDialog,
+    QComboBox,
 )
 
 from app.analyzer.loader import DatasetLoader
@@ -1285,6 +1288,9 @@ class AnalysisPage(QWidget):
         self._gemini_thread: QThread | None = None
         self._gemini_worker: GeminiExplainWorker | None = None
         self._gemini_label: QLabel | None = None
+        self._visualization_dataframe: pd.DataFrame | None = None
+        self._visualization_correlations = None
+        self._visualization_missing_values = None
 
         self.build_ui()
 
@@ -1530,10 +1536,17 @@ class AnalysisPage(QWidget):
         correlations = result.get("correlations")
         fingerprint = result.get("fingerprint") or {}
 
+        self._visualization_dataframe = self.main_window.current_dataset
+        self._visualization_correlations = correlations
+        self._visualization_missing_values = missing_values
+
         # =================================================
         # DATASET PROFILING
         # =================================================
         self.add_cell_profiling(profile, fingerprint, statistics)
+
+        # Visualisasi memakai dataset aktual dan hasil analyzer di atas.
+        self._build_visualization_panel()
 
         # =================================================
         # DATA QUALITY
@@ -1567,6 +1580,180 @@ class AnalysisPage(QWidget):
         self.add_cell_gemini(result)
 
         self.result_layout.addStretch()
+
+    # =====================================================
+    # VISUALIZATION
+    # =====================================================
+
+    MAX_PLOT_ROWS = 20_000
+    MAX_CATEGORIES = 20
+
+    def _build_visualization_panel(self):
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Visualisasi Data")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        controls = QHBoxLayout()
+        self.chart_type = QComboBox()
+        self.chart_type.addItem("Histogram", "histogram")
+        self.chart_type.addItem("Diagram batang", "bar")
+        self.chart_type.addItem("Box plot", "box")
+        self.chart_type.addItem("Heatmap korelasi", "correlation")
+        self.chart_type.addItem("Nilai kosong", "missing")
+        self.chart_type.currentIndexChanged.connect(self._update_visualization_options)
+
+        self.chart_column = QComboBox()
+        self.chart_column.currentIndexChanged.connect(self._draw_visualization)
+        self.chart_type.currentIndexChanged.connect(self._draw_visualization)
+
+        controls.addWidget(QLabel("Jenis grafik"))
+        controls.addWidget(self.chart_type, 1)
+        controls.addWidget(QLabel("Kolom"))
+        controls.addWidget(self.chart_column, 1)
+        layout.addLayout(controls)
+
+        self.chart_message = QLabel("Jalankan analisis untuk melihat visualisasi.")
+        self.chart_message.setObjectName("pageSubtitle")
+        self.chart_message.setAlignment(Qt.AlignCenter)
+        self.chart_message.setMinimumHeight(250)
+        layout.addWidget(self.chart_message)
+
+        self.chart_figure = Figure(figsize=(8, 4), tight_layout=True)
+        self.chart_canvas = FigureCanvasQTAgg(self.chart_figure)
+        self.chart_canvas.setMinimumHeight(300)
+        self.chart_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.chart_canvas.hide()
+        layout.addWidget(self.chart_canvas)
+
+        self.result_layout.addWidget(card)
+        self._update_visualization_options()
+
+    @staticmethod
+    def _chart_columns(dataframe, chart_type):
+        if dataframe is None:
+            return []
+        if chart_type in ("histogram", "box"):
+            return [
+                column for column in dataframe.select_dtypes(include=["number"]).columns
+                if dataframe[column].nunique(dropna=True) > 1
+            ]
+        if chart_type == "bar":
+            return [
+                column for column in dataframe.columns
+                if 1 < dataframe[column].nunique(dropna=True) <= 100
+            ]
+        return []
+
+    def _update_visualization_options(self, *_):
+        if not hasattr(self, "chart_type"):
+            return
+        chart_type = self.chart_type.currentData()
+        columns = self._chart_columns(self._visualization_dataframe, chart_type)
+        self.chart_column.blockSignals(True)
+        self.chart_column.clear()
+        self.chart_column.addItems([str(column) for column in columns])
+        self.chart_column.setEnabled(bool(columns))
+        self.chart_column.blockSignals(False)
+        self._draw_visualization()
+
+    def _draw_visualization(self, *_):
+        if not hasattr(self, "chart_figure"):
+            return
+        self.chart_figure.clear()
+        dataframe = self._visualization_dataframe
+        if dataframe is None:
+            self._show_chart_message("Belum ada dataset untuk divisualisasikan.")
+            return
+
+        chart_type = self.chart_type.currentData()
+        axis = self.chart_figure.add_subplot(111)
+        if len(dataframe) > self.MAX_PLOT_ROWS:
+            sample = dataframe.sample(self.MAX_PLOT_ROWS, random_state=0)
+        else:
+            sample = dataframe
+
+        if chart_type in ("histogram", "box", "bar"):
+            if self.chart_column.currentIndex() < 0:
+                self.chart_figure.clear()
+                self._show_chart_message(self._empty_chart_message(chart_type))
+                return
+            candidates = self._chart_columns(dataframe, chart_type)
+            column = candidates[self.chart_column.currentIndex()]
+            column_name = str(column)
+            values = sample[column].dropna()
+            if chart_type == "histogram":
+                if len(values) < 2 or values.nunique() < 2:
+                    self._show_chart_message("Kolom ini belum memiliki variasi untuk histogram.")
+                    return
+                axis.hist(values, bins="auto", color="#4F8CFF", edgecolor="white")
+                axis.set(title=f"Distribusi {column_name}", xlabel=column_name, ylabel="Jumlah")
+            elif chart_type == "box":
+                if values.empty:
+                    self._show_chart_message("Tidak ada nilai untuk ditampilkan pada box plot.")
+                    return
+                axis.boxplot(values, vert=False, patch_artist=True,
+                             boxprops={"facecolor": "#DCEAFF", "color": "#4F8CFF"},
+                             medianprops={"color": "#172033"})
+                axis.set(title=f"Sebaran {column_name}", xlabel=column_name, yticks=[])
+            else:
+                counts = sample.iloc[:, dataframe.columns.get_loc(column)].dropna()
+                counts = counts.astype("string").value_counts().head(self.MAX_CATEGORIES)
+                if counts.empty:
+                    self._show_chart_message("Tidak ada kategori untuk ditampilkan.")
+                    return
+                axis.bar(counts.index.astype(str), counts.values, color="#4F8CFF")
+                axis.set(title=f"Kategori {column_name}", xlabel=column_name, ylabel="Jumlah")
+                axis.tick_params(axis="x", labelrotation=35)
+                axis.margins(x=0.05)
+        elif chart_type == "correlation":
+            correlations = self._visualization_correlations
+            if not hasattr(correlations, "empty") or correlations.empty or len(correlations.columns) < 2:
+                self._show_chart_message("Heatmap memerlukan sedikitnya dua kolom numerik yang dapat dibandingkan.")
+                return
+            matrix = correlations.fillna(0).to_numpy()
+            image = axis.imshow(matrix, cmap="coolwarm", vmin=-1, vmax=1, aspect="auto")
+            names = [str(name) for name in correlations.columns]
+            axis.set_xticks(range(len(names)), names, rotation=35, ha="right")
+            axis.set_yticks(range(len(names)), names)
+            axis.set_title("Korelasi antar kolom numerik")
+            self.chart_figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+        else:
+            missing = self._visualization_missing_values or []
+            entries = [item for item in missing if item.get("missing_count", 0) > 0]
+            if not entries:
+                self._show_chart_message("Tidak ada nilai kosong pada dataset.")
+                return
+            names = [str(item["column"]) for item in entries[:self.MAX_CATEGORIES]]
+            counts = [int(item["missing_count"]) for item in entries[:self.MAX_CATEGORIES]]
+            axis.bar(names, counts, color="#4F8CFF")
+            axis.set(title="Nilai kosong per kolom", xlabel="Kolom", ylabel="Jumlah")
+            axis.tick_params(axis="x", labelrotation=35)
+
+        self.chart_message.hide()
+        self.chart_canvas.show()
+        self.chart_canvas.draw_idle()
+
+    @staticmethod
+    def _empty_chart_message(chart_type):
+        if chart_type in ("histogram", "box"):
+            return "Tidak ada kolom numerik dengan variasi yang sesuai."
+        if chart_type == "bar":
+            return "Tidak ada kolom kategori yang sesuai untuk diagram batang."
+        if chart_type == "correlation":
+            return "Heatmap korelasi belum tersedia untuk dataset ini."
+        return "Tidak ada nilai kosong pada dataset."
+
+    def _show_chart_message(self, message):
+        self.chart_canvas.hide()
+        self.chart_message.setText(message)
+        self.chart_message.show()
+        self.chart_canvas.draw_idle()
 
     # =====================================================
     # HUMAN-READABLE ANALYSIS
