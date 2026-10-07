@@ -1531,38 +1531,38 @@ class AnalysisPage(QWidget):
         fingerprint = result.get("fingerprint") or {}
 
         # =================================================
-        # ANALYSIS CELL 01: DATASET PROFILING & UNDERSTANDING
+        # DATASET PROFILING
         # =================================================
         self.add_cell_profiling(profile, fingerprint, statistics)
 
         # =================================================
-        # ANALYSIS CELL 02: DATA QUALITY DIAGNOSIS (4 PILLARS)
+        # DATA QUALITY
         # =================================================
         quality_issues = result.get("data_quality") or []
         self.add_cell_data_quality(quality_issues)
 
         # =================================================
-        # ANALYSIS CELL 03: MISSING VALUE ANALYSIS & TREATMENT
+        # MISSING VALUES
         # =================================================
         self.add_cell_missing_values(missing_values)
 
         # =================================================
-        # ANALYSIS CELL 04: OUTLIER DETECTION (IQR METHOD)
+        # OUTLIERS
         # =================================================
         self.add_cell_outliers(outliers)
 
         # =================================================
-        # ANALYSIS CELL 05: CORRELATION & FEATURE RELATIONSHIPS
+        # CORRELATIONS
         # =================================================
         self.add_cell_correlations(correlations)
 
         # =================================================
-        # ANALYSIS CELL 06: DATASET VERSIONS & RESEARCH TRAIL
+        # DATASET VERSIONS
         # =================================================
         self.add_versioning_section()
 
         # =================================================
-        # ANALYSIS CELL 07: AI RESEARCH INTERPRETATION
+        # AUTOMATED INTERPRETATION
         # =================================================
         self.add_cell_gemini(result)
 
@@ -1855,22 +1855,9 @@ class AnalysisPage(QWidget):
         self._gemini_thread = None
         self._gemini_worker = None
 
-    def _on_gemini_finished(self, text: str, source: str = "local"):
+    def _on_gemini_finished(self, text: str, _source: str = "local"):
         if self._gemini_label is not None:
             self._gemini_label.setText(text)
-        if hasattr(self, "_gemini_badge") and self._gemini_badge is not None:
-            if source == "gemini":
-                self._gemini_badge.setText("Cloud AI (Gemini)")
-                self._gemini_badge.setStyleSheet(
-                    "background: #EEF5FF; color: #3D78D8; border: 1px solid #D7E8FF; "
-                    "border-radius: 10px; font-size: 10px; font-weight: 700; padding: 2px 10px;"
-                )
-            else:
-                self._gemini_badge.setText("Local Academic Engine")
-                self._gemini_badge.setStyleSheet(
-                    "background: #EAF7F0; color: #2C9B68; border: 1px solid #D3EFDF; "
-                    "border-radius: 10px; font-size: 10px; font-weight: 700; padding: 2px 10px;"
-                )
 
     def _on_gemini_failed(self, message: str):
         if self._gemini_label is not None:
@@ -1924,12 +1911,11 @@ class AnalysisPage(QWidget):
         self.show_empty_state()
 
     # =========================================================
-    # ANALYSIS CELLS (PROJECT BRIEF SECTION 6 & STAGES 2-5)
+    # ANALYSIS SECTIONS
     # =========================================================
 
     def _create_cell_frame(
         self,
-        cell_number: str,
         title: str,
         subtitle: str = "",
         badge_text: str = "",
@@ -1944,14 +1930,6 @@ class AnalysisPage(QWidget):
         # Header row
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
-
-        cell_badge = QLabel(cell_number)
-        cell_badge.setStyleSheet(
-            "background: #EEF4FF; color: #1E40AF; font-weight: 800; "
-            "font-size: 10px; border-radius: 4px; padding: 3px 8px; "
-            "border: 1px solid #BFDBFE;"
-        )
-        header_row.addWidget(cell_badge)
 
         title_label = QLabel(title)
         title_label.setObjectName("sectionTitle")
@@ -1987,16 +1965,13 @@ class AnalysisPage(QWidget):
         return card, layout
 
     # ---------------------------------------------------------
-    # CELL 01: DATASET PROFILING & UNDERSTANDING
+    # DATASET PROFILING
     # ---------------------------------------------------------
 
     def add_cell_profiling(self, profile, fingerprint, statistics):
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 01",
-            "Dataset Profiling & Understanding",
-            "Memahami struktur dasar dataset, dimensi, tipe semantik, dan kandidat target penelitian.",
-            badge_text="Terstruktur",
-            badge_style="success",
+            "Ringkasan dataset",
+            "Ukuran dataset, jenis kolom, dan cuplikan data.",
         )
 
         rows = profile.get("rows", 0)
@@ -2046,12 +2021,12 @@ class AnalysisPage(QWidget):
             reasons = sig.get("target_reasons", [])
             reasons_str = "; ".join(reasons) if reasons else "Indikasi target klasifikasi/regresi"
             u_count = sig.get("unique_count", "-")
-            task_type = "Binary Classification" if u_count == 2 else ("Multiclass Classification" if isinstance(u_count, int) and u_count <= 10 else "Regression / Prediksi")
+            task_type = "Klasifikasi biner" if u_count == 2 else ("Klasifikasi multikelas" if isinstance(u_count, int) and u_count <= 10 else "Regresi / prediksi")
             t_title = QLabel(f"<b>Kandidat Target Terdeteksi:</b> <span style='color: #2C9B68; font-weight: bold;'>{first_target}</span> ({task_type})")
-            t_desc = QLabel(f"Skor heuristik: <b>{score}/100</b> &nbsp;&bull;&nbsp; Evidence: {reasons_str}")
+            t_desc = QLabel(f"Skor perkiraan: <b>{score}/100</b> &nbsp;&bull;&nbsp; Dasar: {reasons_str}")
         else:
             t_title = QLabel("<b>Kandidat Target:</b> Tidak terdeteksi kolom target eksplisit.")
-            t_desc = QLabel("Dataset ini ideal untuk task Unsupervised Learning (Clustering, Analisis Komponen Utama/PCA, atau Deteksi Anomali).")
+            t_desc = QLabel("Belum ada kolom target yang jelas. Analisis tanpa target masih dapat dilakukan.")
 
         t_title.setStyleSheet("color: #1A3A28; font-size: 12px;")
         t_desc.setStyleSheet("color: #2C6B4A; font-size: 11px;")
@@ -2061,14 +2036,14 @@ class AnalysisPage(QWidget):
 
         # Feature Schema & Column Characteristics Table (Stage 2: Data Understanding)
         if statistics:
-            schema_title = QLabel("<b>Skema & Karakteristik Fitur (Feature Schema & Summary):</b>")
+            schema_title = QLabel("<b>Karakteristik kolom</b>")
             schema_title.setStyleSheet("font-size: 12px; color: #1C2B40; margin-top: 6px;")
             layout.addWidget(schema_title)
 
             schema_table = QTableWidget()
             schema_table.setColumnCount(5)
             schema_table.setHorizontalHeaderLabels([
-                "Nama Fitur", "Tipe Data", "Nilai Unik", "Missing (%)", "Ringkasan Statistik / Modus"
+                "Nama kolom", "Tipe data", "Nilai unik", "Kosong (%)", "Ringkasan statistik / modus"
             ])
             schema_table.setRowCount(len(statistics))
             schema_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -2083,7 +2058,7 @@ class AnalysisPage(QWidget):
 
                 # Summary stats text
                 if stat.get("mean") is not None:
-                    summary = f"Rentang: [{stat.get('min', 0):.2g} – {stat.get('max', 0):.2g}] | Mean: {stat.get('mean', 0):.2f}"
+                    summary = f"Rentang: [{stat.get('min', 0):.2g} – {stat.get('max', 0):.2g}] | Rata-rata: {stat.get('mean', 0):.2f}"
                 elif stat.get("top_values"):
                     top_v = stat["top_values"][0]
                     summary = f"Modus: {top_v.get('value')} ({top_v.get('frequency')}x)"
@@ -2109,10 +2084,10 @@ class AnalysisPage(QWidget):
             schema_table.setFixedHeight(min(200, 36 + len(statistics) * 28))
             layout.addWidget(schema_table)
 
-        # Data Preview (5 baris pertama)
+        # Cuplikan data (5 baris pertama)
         df = getattr(self.main_window, "current_dataset", None)
         if df is not None and not df.empty:
-            preview_title = QLabel("<b>Data Preview (5 Baris Pertama):</b>")
+            preview_title = QLabel("<b>Cuplikan data (5 baris pertama)</b>")
             preview_title.setStyleSheet("font-size: 12px; color: #1C2B40; margin-top: 6px;")
             layout.addWidget(preview_title)
 
@@ -2136,14 +2111,14 @@ class AnalysisPage(QWidget):
         # Fingerprint hash if available
         fp_hash = fingerprint.get("fingerprint") if isinstance(fingerprint, dict) else None
         if fp_hash:
-            fp_lbl = QLabel(f"<span style='color: #64748B;'>Dataset SHA-256 Fingerprint:</span> <code style='color: #475569;'>{fp_hash[:24]}...</code>")
+            fp_lbl = QLabel(f"<span style='color: #64748B;'>Sidik jari dataset (SHA-256):</span> <code style='color: #475569;'>{fp_hash[:24]}...</code>")
             fp_lbl.setStyleSheet("font-size: 11px;")
             layout.addWidget(fp_lbl)
 
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 02: DATA QUALITY DIAGNOSIS (4 PILLARS)
+    # DATA QUALITY
     # ---------------------------------------------------------
 
     def add_cell_data_quality(self, quality_issues):
@@ -2153,9 +2128,8 @@ class AnalysisPage(QWidget):
         b_style = "critical" if has_crit else ("warning" if has_warn else "success")
 
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 02",
-            "Data Quality Diagnosis (4 Pillars)",
-            "Diagnosis kualitas data komprehensif: Apa Masalahnya, Seberapa Besar, Apa Dampaknya, dan Opsi Penanganannya.",
+            "Kualitas data",
+            "Temuan pada nilai kosong, duplikasi, dan nilai ekstrem.",
             badge_text=b_text,
             badge_style=b_style,
         )
@@ -2234,7 +2208,7 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 03: MISSING VALUE ANALYSIS & TREATMENT
+    # MISSING VALUES
     # ---------------------------------------------------------
 
     def add_cell_missing_values(self, missing_values):
@@ -2246,9 +2220,8 @@ class AnalysisPage(QWidget):
         b_style = "warning" if active_missing else "success"
 
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 03",
-            "Missing Value Analysis & Treatment",
-            "Distribusi nilai kosong per fitur dan tindakan pembersihan (data preparation).",
+            "Nilai kosong",
+            "Kolom yang memiliki data belum terisi.",
             badge_text=b_text,
             badge_style=b_style,
         )
@@ -2311,7 +2284,7 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 04: OUTLIER DETECTION (IQR METHOD)
+    # OUTLIERS
     # ---------------------------------------------------------
 
     def add_cell_outliers(self, outliers):
@@ -2323,9 +2296,8 @@ class AnalysisPage(QWidget):
         b_style = "info" if active_outliers else "success"
 
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 04",
-            "Outlier Detection (IQR Method)",
-            "Deteksi observasi ekstrem menggunakan Interquartile Range [Q1 - 1.5×IQR, Q3 + 1.5×IQR].",
+            "Nilai ekstrem",
+            "Penanda dihitung dengan metode rentang interkuartil (IQR).",
             badge_text=b_text,
             badge_style=b_style,
         )
@@ -2377,16 +2349,13 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 05: CORRELATION & FEATURE RELATIONSHIPS
+    # CORRELATIONS
     # ---------------------------------------------------------
 
     def add_cell_correlations(self, correlations):
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 05",
-            "Correlation & Feature Relationships",
-            "Analisis korelasi Pearson antar fitur numerik dan deteksi multikolinearitas (|r| > 0.85).",
-            badge_text="Bivariate / Multivariate",
-            badge_style="info",
+            "Korelasi",
+            "Hubungan antar kolom numerik.",
         )
 
         pairs = []
@@ -2433,7 +2402,7 @@ class AnalysisPage(QWidget):
             mc_box.setWordWrap(True)
             layout.addWidget(mc_box)
         else:
-            mc_box = QLabel("<b>Multicollinearity Check:</b> Tidak ditemukan multikolinearitas ekstrem (|r| > 0.85). Fitur numerik relatif independen.")
+            mc_box = QLabel("<b>Pemeriksaan korelasi:</b> Tidak ditemukan pasangan kolom dengan korelasi sangat kuat (|r| > 0.85).")
             mc_box.setStyleSheet("background: #EAF7F0; border: 1px solid #D3EFDF; border-radius: 6px; padding: 8px 12px; font-size: 11px; color: #2C9B68;")
             mc_box.setWordWrap(True)
             layout.addWidget(mc_box)
@@ -2441,7 +2410,7 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 06: DATASET VERSIONS & RESEARCH TRAIL
+    # DATASET VERSIONS
     # ---------------------------------------------------------
 
     def add_versioning_section(self):
@@ -2459,11 +2428,8 @@ class AnalysisPage(QWidget):
         trail = vm.get_trail(project_id)
 
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 06",
-            "Dataset Versions & Research Trail",
-            "Sistem pelacakan riwayat versi dataset yang immutable dan reproducible.",
-            badge_text="Reproducible Trail",
-            badge_style="success",
+            "Riwayat dataset",
+            "Versi dan perubahan yang tersimpan.",
         )
 
         curr_num = current_ver.version if current_ver else 0
@@ -2564,19 +2530,14 @@ class AnalysisPage(QWidget):
         self.result_layout.addWidget(card)
 
     # ---------------------------------------------------------
-    # CELL 07: AI RESEARCH INTERPRETATION
+    # AUTOMATED INTERPRETATION
     # ---------------------------------------------------------
 
     def add_cell_gemini(self, result):
         card, layout = self._create_cell_frame(
-            "ANALYSIS CELL 07",
-            "AI Research Interpretation",
-            "Program menghitung, AI menjelaskan: Narasi interpretasi akademis hasil analisis dataset.",
-            badge_text="Menyusun Narasi...",
-            badge_style="info",
+            "Interpretasi AI",
+            "Ringkasan otomatis berdasarkan hasil analisis dataset.",
         )
-        self._gemini_badge = getattr(card, "status_badge", None)
-
         self._gemini_label = QLabel("Sedang menyusun interpretasi akademis berdasarkan fakta dataset...")
         self._gemini_label.setObjectName("analysisContent")
         self._gemini_label.setWordWrap(True)
