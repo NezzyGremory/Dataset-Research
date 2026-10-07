@@ -49,11 +49,21 @@ class DatasetSearchResult:
 
     @property
     def title(self) -> str:
-        name = self.dataset_id.split("/", 1)[-1]
+        clean_id = self.dataset_id.replace("kaggle:", "")
+        name = clean_id.split("/", 1)[-1]
         return name.replace("-", " ").replace("_", " ").strip()
 
     @property
+    def source_label(self) -> str:
+        if self.dataset_id.startswith("kaggle:"):
+            return "Kaggle"
+        return "Hugging Face"
+
+    @property
     def url(self) -> str:
+        if self.dataset_id.startswith("kaggle:"):
+            clean_id = self.dataset_id.replace("kaggle:", "")
+            return f"https://www.kaggle.com/datasets/{clean_id}"
         return f"https://huggingface.co/datasets/{self.dataset_id}"
 
     @property

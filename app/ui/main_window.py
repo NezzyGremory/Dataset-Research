@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Dict
 import pandas as pd
 
@@ -50,6 +52,7 @@ from app.ml.intelligence import MLIntelligenceEngine
 from app.research.intelligence import ResearchIntelligenceEngine
 from app.ui.dataset_search_page import DatasetSearchPage
 from app.storage import Database, ProjectRepository, DatasetVersionManager
+from app.reports import ReportGenerator
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -7375,22 +7378,26 @@ class ResearchGapToolPage(QWidget):
 
 class ResearchReportToolPage(QWidget):
     """Standalone report preview and HTML export."""
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
+        self.report_generator = ReportGenerator()
         self.research_result: Dict[str, Any] = {}
         self.current_html = ""
+        self.last_exported_path = None
         self.build_ui()
 
     def build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 25, 30, 25)
         root.setSpacing(16)
+
         header = QHBoxLayout()
         box = QVBoxLayout()
-        title = QLabel("Research Report")
+        title = QLabel("Executive Research & ML Report")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Generate a structured report from the latest Dataset Research analysis.")
+        subtitle = QLabel("Generate dan ekspor laporan komprehensif profil dataset, diagnostik 4 pilar kualitas, benchmark empiris ML, serta telaah literatur ilmiah.")
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
         box.addWidget(title)
@@ -7401,15 +7408,22 @@ class ResearchReportToolPage(QWidget):
         self.generate_button.setObjectName("primaryButton")
         self.generate_button.clicked.connect(self.generate_preview)
         header.addWidget(self.generate_button)
+
+        self.browser_button = QPushButton("Buka di Browser / Print")
+        self.browser_button.clicked.connect(self.open_in_browser)
+        self.browser_button.setEnabled(False)
+        header.addWidget(self.browser_button)
+
         self.export_button = QPushButton("Export HTML")
         self.export_button.clicked.connect(self.export_html)
         self.export_button.setEnabled(False)
         header.addWidget(self.export_button)
         root.addLayout(header)
 
-        self.status = QLabel("No research result available.")
+        self.status = QLabel("Dataset atau analisis belum dimuat.")
         self.status.setObjectName("statusLabel")
         root.addWidget(self.status)
+
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         root.addWidget(self.preview, 1)
@@ -7418,9 +7432,14 @@ class ResearchReportToolPage(QWidget):
     def show_empty_state(self):
         self.research_result = {}
         self.current_html = ""
-        self.status.setText("Run Academic Research first to generate a report.")
-        self.preview.setPlainText("Research Report belum tersedia.\n\nRun Academic Research terlebih dahulu.")
+        self.status.setText("Muat dataset atau jalankan analisis/ML/riset terlebih dahulu.")
+        self.preview.setPlainText(
+            "Executive Report belum tersedia.\n\n"
+            "Silakan muat dataset dan jalankan Dataset Analysis, ML Intelligence, "
+            "atau Academic Research untuk menghasilkan laporan komprehensif."
+        )
         self.export_button.setEnabled(False)
+        self.browser_button.setEnabled(False)
 
     def update_from_result(self, result):
         self.research_result = result or {}
@@ -7432,92 +7451,80 @@ class ResearchReportToolPage(QWidget):
     def generate_preview(self):
         if not self.research_result:
             self.refresh_from_main()
-        if not self.research_result:
+
+        filename = self.main_window._current_filename()
+        has_dataset = self.main_window.current_dataset is not None
+        analysis_data = getattr(self.main_window, "analysis_result", {}) or {}
+        ml_data = getattr(self.main_window.ml_page, "last_intelligence_result", {}) or {}
+        research_data = self.research_result or getattr(self.main_window.research_page, "research_result", {}) or {}
+
+        # If completely empty
+        if not has_dataset and not analysis_data and not ml_data and not research_data:
             self.show_empty_state()
             return
-        self.preview.setPlainText(self._build_report_text(self.research_result))
-        self.current_html = self._build_report_html(self.research_result)
-        self.status.setText("Report generated from the latest Academic Research result.")
-        self.export_button.setEnabled(True)
+
+        try:
+            self.current_html = self.report_generator.generate(
+                dataset_name=filename,
+                analysis_data=analysis_data,
+                ml_data=ml_data,
+                research_data=research_data,
+            )
+            self.preview.setHtml(self.current_html)
+            self.status.setText(
+                f"Laporan berhasil dibuat untuk '{filename}' "
+                f"(Analisis: {'Ya' if analysis_data else 'Belum'}, "
+                f"ML: {'Ya' if ml_data else 'Belum'}, "
+                f"Riset: {'Ya' if research_data else 'Belum'})."
+            )
+            self.export_button.setEnabled(True)
+            self.browser_button.setEnabled(True)
+        except Exception as exc:
+            self.status.setText(f"Gagal membuat laporan: {exc}")
+            QMessageBox.warning(self, "Report Generation Error", f"Terjadi kesalahan saat membuat laporan: {exc}")
+
+    def open_in_browser(self):
+        if not self.current_html:
+            self.generate_preview()
+        if not self.current_html:
+            return
+
+        filename = Path(self.main_window._current_filename()).stem or "dataset"
+        temp_dir = Path(tempfile.gettempdir()) / "dataset_research_reports"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / f"{filename}_report_{int(datetime.now().timestamp())}.html"
+
+        try:
+            temp_file.write_text(self.current_html, encoding="utf-8")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(temp_file)))
+        except OSError as exc:
+            QMessageBox.critical(self, "Error Buka Browser", str(exc))
 
     def export_html(self):
         if not self.current_html:
             self.generate_preview()
         if not self.current_html:
             return
+
         filename = Path(self.main_window._current_filename()).stem or "dataset"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Research Report", f"{filename}_research_report.html", "HTML Files (*.html)"
+            self, "Export Executive Report", f"{filename}_research_report.html", "HTML Files (*.html)"
         )
         if not path:
             return
         try:
             Path(path).write_text(self.current_html, encoding="utf-8")
-            QMessageBox.information(self, "Report Exported", f"Research report saved to:\n{path}")
+            self.last_exported_path = Path(path)
+            res = QMessageBox.information(
+                self,
+                "Report Exported",
+                f"Laporan berhasil disimpan ke:\n{path}\n\nBuka laporan sekarang di browser?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         except OSError as exc:
             QMessageBox.critical(self, "Export Error", str(exc))
-
-    @staticmethod
-    def _build_report_text(result):
-        summary = result.get("summary", {})
-        keywords = result.get("keywords", {})
-        domain = result.get("domain", {})
-        papers = result.get("papers", [])
-        landscape = result.get("landscape", {})
-        trend = result.get("trend", {})
-        gaps = result.get("gaps", {})
-        lines = [
-            "DATASET RESEARCH REPORT",
-            "=" * 80,
-            "",
-            "RESEARCH SUMMARY",
-            ResearchPage._format_section(summary),
-            "",
-            "KEYWORDS",
-            ResearchPage._format_section(keywords),
-            "",
-            "RESEARCH DOMAIN",
-            ResearchPage._format_section(domain),
-            "",
-            f"ACADEMIC PAPERS ({len(papers)})",
-        ]
-        for i, paper in enumerate(papers[:10], 1):
-            lines.append(
-                f"{i}. {paper.get('title', 'Untitled')} | {paper.get('year') or '-'} | "
-                f"Relevance {ResearchPage._format_value(paper.get('relevance_score'))}"
-            )
-        lines.extend([
-            "",
-            "RESEARCH LANDSCAPE",
-            ResearchPage._format_section(landscape),
-            "",
-            "RESEARCH TREND",
-            ResearchPage._format_section(trend),
-            "",
-            "POTENTIAL RESEARCH GAP",
-            ResearchPage._format_gap(gaps),
-            "",
-            "TRANSPARENCY",
-            ResearchPage._format_section(result.get("transparency", {})),
-        ])
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_report_html(result):
-        import html
-        text = ResearchReportToolPage._build_report_text(result)
-        escaped = html.escape(text)
-        return (
-            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>Dataset Research Report</title>"
-            "<style>body{font-family:Segoe UI,Arial,sans-serif;background:#f5f8fc;"
-            "color:#1f2937;margin:0;padding:36px}main{max-width:1000px;margin:auto;"
-            "background:#fff;padding:36px;border-radius:16px;box-shadow:0 8px 30px rgba(15,23,42,.08)}"
-            "h1{color:#2563eb}pre{white-space:pre-wrap;font-family:Consolas,monospace;"
-            "line-height:1.55}</style></head><body><main><h1>Dataset Research Report</h1>"
-            f"<pre>{escaped}</pre></main></body></html>"
-        )
 
 class MainWindow(QMainWindow):
     """Main application window for Dataset Research.
@@ -7899,10 +7906,16 @@ class MainWindow(QMainWindow):
         self._show_page("gap")
 
     def open_report_tool(self):
-        if not self.analysis_result or not self.research_page.research_result:
+        has_data = (
+            self.current_dataset is not None
+            or bool(self.analysis_result)
+            or bool(getattr(self.ml_page, "last_intelligence_result", {}))
+            or bool(getattr(self.research_page, "research_result", {}))
+        )
+        if not has_data:
             self.report_tool_page.show_empty_state()
         else:
-            self.report_tool_page.update_from_result(self.research_page.research_result)
+            self.report_tool_page.generate_preview()
         self._show_page("report")
 
     def _current_filename(self):

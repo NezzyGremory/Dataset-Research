@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import pandas as pd
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QComboBox,
     QVBoxLayout,
     QWidget,
 )
@@ -27,20 +26,60 @@ from app.dataset_search.huggingface import (
     DatasetSearchResult,
     HuggingFaceDatasetClient,
 )
+from app.dataset_search.kaggle import KaggleDatasetClient
 
 
 class DatasetSearchWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, client: HuggingFaceDatasetClient, query: str):
+    def __init__(
+        self,
+        hf_client: HuggingFaceDatasetClient,
+        kaggle_client: KaggleDatasetClient,
+        query: str,
+        source: str = "all",
+    ):
         super().__init__()
-        self.client = client
+        self.hf_client = hf_client
+        self.kaggle_client = kaggle_client
         self.query = query
+        self.source = source
 
     def run(self):
         try:
-            self.finished.emit(self.client.search(self.query))
+            results: list[DatasetSearchResult] = []
+            errors: list[str] = []
+
+            # 1. Search Kaggle
+            if self.source in {"all", "kaggle"}:
+                try:
+                    kaggle_results = self.kaggle_client.search(self.query, limit=15)
+                    results.extend(kaggle_results)
+                except Exception as exc:
+                    errors.append(f"Kaggle: {exc}")
+
+            # 2. Search Hugging Face
+            if self.source in {"all", "huggingface"}:
+                try:
+                    hf_results = self.hf_client.search(self.query, limit=15)
+                    results.extend(hf_results)
+                except Exception as exc:
+                    errors.append(f"Hugging Face: {exc}")
+
+            if not results and errors:
+                raise RuntimeError("; ".join(errors))
+
+            # Deduplicate by dataset_id and sort by relevance score
+            seen_ids = set()
+            unique_results = []
+            for r in results:
+                if r.dataset_id not in seen_ids:
+                    seen_ids.add(r.dataset_id)
+                    unique_results.append(r)
+
+            unique_results.sort(key=lambda r: r.relevance_score, reverse=True)
+            self.finished.emit(unique_results)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -51,36 +90,47 @@ class DatasetDownloadWorker(QObject):
 
     def __init__(
         self,
-        client: HuggingFaceDatasetClient,
+        hf_client: HuggingFaceDatasetClient,
+        kaggle_client: KaggleDatasetClient,
         dataset_id: str,
         filename: str,
         destination: Path,
     ):
         super().__init__()
-        self.client = client
+        self.hf_client = hf_client
+        self.kaggle_client = kaggle_client
         self.dataset_id = dataset_id
         self.filename = filename
         self.destination = destination
 
     def run(self):
         try:
-            path = self.client.download_file(
-                self.dataset_id,
-                self.filename,
-                self.destination,
-            )
+            if self.dataset_id.startswith("kaggle:"):
+                path = self.kaggle_client.download_dataset(
+                    self.dataset_id,
+                    self.destination,
+                    filename=self.filename,
+                )
+            else:
+                path = self.hf_client.download_file(
+                    self.dataset_id,
+                    self.filename,
+                    self.destination,
+                )
             self.finished.emit(str(path))
         except Exception as exc:
             self.failed.emit(str(exc))
 
 
 class DatasetSearchPage(QWidget):
-    """Real-time online dataset discovery powered by Hugging Face Hub."""
+    """Real-time online dataset discovery powered by Hugging Face Hub & Kaggle."""
 
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
-        self.client = HuggingFaceDatasetClient()
+        self.hf_client = HuggingFaceDatasetClient()
+        self.kaggle_client = KaggleDatasetClient()
+        self.client = self.hf_client  # Backward compatibility
         self.results: list[DatasetSearchResult] = []
         self._search_thread: Optional[QThread] = None
         self._search_worker: Optional[DatasetSearchWorker] = None
@@ -98,8 +148,8 @@ class DatasetSearchPage(QWidget):
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Cari dataset publik secara real-time, lihat format file, "
-            "lalu unduh langsung ke workspace Dataset Research."
+            "Cari dataset publik secara real-time dari Hugging Face Hub & Kaggle, "
+            "lihat format file, lalu unduh langsung ke workspace Dataset Research."
         )
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
@@ -118,10 +168,17 @@ class DatasetSearchPage(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(
-            "Contoh: dataset pertanian, crop yield, diabetes, student performance..."
+            "Contoh: titanic, dataset pertanian, crop yield, diabetes, student performance..."
         )
         self.search_input.setMinimumHeight(44)
         self.search_input.returnPressed.connect(self.search_datasets)
+
+        self.source_combo = QComboBox()
+        self.source_combo.setMinimumHeight(44)
+        self.source_combo.setMinimumWidth(165)
+        self.source_combo.addItem("Semua Sumber (HF + Kaggle)", "all")
+        self.source_combo.addItem("Kaggle Datasets", "kaggle")
+        self.source_combo.addItem("Hugging Face Hub", "huggingface")
 
         self.search_button = QPushButton("Search")
         self.search_button.setObjectName("primaryButton")
@@ -130,19 +187,20 @@ class DatasetSearchPage(QWidget):
         self.search_button.clicked.connect(self.search_datasets)
 
         row.addWidget(self.search_input, 1)
+        row.addWidget(self.source_combo)
         row.addWidget(self.search_button)
         search_layout.addLayout(row)
 
         self.status_label = QLabel(
-            "Masukkan keyword dataset lalu tekan Search."
+            "Pilih sumber (Hugging Face / Kaggle / Semua), masukkan keyword lalu tekan Search."
         )
         self.status_label.setObjectName("cardDescription")
         self.status_label.setWordWrap(True)
         search_layout.addWidget(self.status_label)
 
         hint = QLabel(
-            "Ketik topik atau kebutuhan dataset, bukan harus nama dataset. "
-            "Contoh: pertanian, mahasiswa, kesehatan, saham, transportasi."
+            "Mendukung pencarian dataset global & lokal. "
+            "Contoh: titanic, iris, pertanian, mahasiswa, kesehatan, saham, house price."
         )
         hint.setObjectName("cardDescription")
         hint.setWordWrap(True)
@@ -183,17 +241,22 @@ class DatasetSearchPage(QWidget):
             self.search_input.setFocus()
             return
 
+        source = self.source_combo.currentData() or "all"
+        source_label = self.source_combo.currentText()
+
         self._clear_results()
         self.status_label.setText(
-            f'Mencari dataset untuk "{query}"...'
+            f'Mencari dataset untuk "{query}" di {source_label}...'
         )
         self.search_button.setEnabled(False)
         self.progress.setVisible(True)
 
         self._search_thread = QThread(self)
         self._search_worker = DatasetSearchWorker(
-            self.client,
+            self.hf_client,
+            self.kaggle_client,
             query,
+            source=source,
         )
         self._search_worker.moveToThread(self._search_thread)
         self._search_thread.started.connect(self._search_worker.run)
@@ -210,13 +273,13 @@ class DatasetSearchPage(QWidget):
 
         if not self.results:
             self.status_label.setText(
-                "Tidak ada dataset yang cocok. Coba keyword yang lebih umum."
+                "Tidak ada dataset yang cocok. Coba keyword yang lebih umum atau ganti sumber pencarian."
             )
             self._show_empty_message("Tidak ada dataset ditemukan.")
             return
 
         self.status_label.setText(
-            f"{len(self.results)} dataset ditemukan dari keyword. "
+            f"{len(self.results)} dataset ditemukan. "
             "Hasil diurutkan berdasarkan kecocokan topik dan metadata. "
             "Pilih format file lalu Download atau Download & Analyze."
         )
@@ -257,11 +320,23 @@ class DatasetSearchPage(QWidget):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(9)
 
+        # Header: Title + Source badge
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+
         title = QLabel(result.title)
         title.setObjectName("sectionTitle")
         title.setWordWrap(True)
+        header_row.addWidget(title, 1)
 
-        repo_label = QLabel(result.dataset_id)
+        source_badge = QLabel(f" {result.source_label} ")
+        source_badge.setObjectName("scoreBadge")
+        header_row.addWidget(source_badge)
+
+        layout.addLayout(header_row)
+
+        clean_repo = result.dataset_id.replace("kaggle:", "")
+        repo_label = QLabel(f"ID: {clean_repo}")
         repo_label.setObjectName("cardDescription")
 
         description = QLabel(
@@ -279,22 +354,21 @@ class DatasetSearchPage(QWidget):
         explanation.setObjectName("cardDescription")
         explanation.setWordWrap(True)
 
-        layout.addWidget(explanation)
-
         meta_parts = [
+            f"Sumber: {result.source_label}",
             f"Downloads: {result.downloads:,}",
-            f"Likes: {result.likes:,}",
+            f"Votes/Likes: {result.likes:,}",
         ]
         if result.author:
-            meta_parts.insert(0, f"Author: {result.author}")
+            meta_parts.insert(1, f"Author: {result.author}")
 
         meta = QLabel("  •  ".join(meta_parts))
         meta.setObjectName("cardDescription")
         meta.setWordWrap(True)
 
-        layout.addWidget(title)
         layout.addWidget(repo_label)
         layout.addWidget(description)
+        layout.addWidget(explanation)
         layout.addWidget(meta)
 
         if result.tags:
@@ -304,7 +378,10 @@ class DatasetSearchPage(QWidget):
             tags.setWordWrap(True)
             layout.addWidget(tags)
 
-        files = [f for f in result.files if f.suffix in {"csv", "tsv", "json", "jsonl", "parquet", "xlsx", "xls"}]
+        # Determine file choices
+        files = result.files
+        if not files and result.dataset_id.startswith("kaggle:"):
+            files = [DatasetFile(filename="Dataset Archive (.csv Auto-Extract)")]
 
         if files:
             file_row = QHBoxLayout()
@@ -388,7 +465,7 @@ class DatasetSearchPage(QWidget):
         filename: Optional[str],
         analyze: bool,
     ):
-        if not filename:
+        if not filename and not result.dataset_id.startswith("kaggle:"):
             QMessageBox.warning(
                 self,
                 "Download Dataset",
@@ -399,17 +476,20 @@ class DatasetSearchPage(QWidget):
         self._pending_analyze = bool(analyze)
         self.search_button.setEnabled(False)
         self.progress.setVisible(True)
+
+        clean_name = filename or result.dataset_id.split("/")[-1]
         self.status_label.setText(
-            f"Mengunduh {Path(filename).name}..."
+            f"Mengunduh {clean_name} dari {result.source_label}..."
         )
 
         destination = self._download_directory()
 
         self._download_thread = QThread(self)
         self._download_worker = DatasetDownloadWorker(
-            self.client,
+            self.hf_client,
+            self.kaggle_client,
             result.dataset_id,
-            filename,
+            filename or "",
             destination,
         )
         self._download_worker.moveToThread(self._download_thread)
