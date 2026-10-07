@@ -7850,7 +7850,7 @@ class MainWindow(QMainWindow):
         accent = QLabel("RESEARCH")
         accent.setObjectName("brandAccent")
 
-        subtitle = QLabel("Research Intelligence")
+        subtitle = QLabel("Research Workspace")
         subtitle.setObjectName("brandSubtitle")
 
         brand_text.addWidget(title)

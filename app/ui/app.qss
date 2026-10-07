@@ -24,36 +24,39 @@ QWidget {
    ============================================================ */
 
 #sidebar {
-    background: #FFFFFF;
+    background: #F8FAFD;
     border: none;
+    border-right: 1px solid #E4ECF7;
 }
 
 #brandLogo {
-    background: #EAF3FF;
+    background: linear-gradient(135deg, #EAF3FF 0%, #DDEBFF 100%);
+    border: 1px solid #D4E4FF;
     border-radius: 10px;
-    color: #FFFFFF;
+    color: #2F67D2;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 800;
 }
 
 #brandTitle {
-    color: #FFFFFF;
+    color: #142B45;
     font-size: 18px;
     font-weight: 800;
-    letter-spacing: 2px;
+    letter-spacing: 1.6px;
 }
 
 #brandAccent {
-    color: #4F8CFF;
+    color: #3F7AE1;
     font-size: 18px;
     font-weight: 800;
-    letter-spacing: 2px;
+    letter-spacing: 1.6px;
 }
 
 #brandSubtitle {
-    color: #7A8BA3;
+    color: #64758B;
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: 0.4px;
 }
 
 #sectionLabel {
@@ -67,9 +70,9 @@ QWidget {
 #navButton {
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 9px;
+    border-radius: 10px;
     min-height: 40px;
-    padding: 0;
+    padding: 0 6px 0 8px;
     text-align: left;
 }
 
@@ -79,8 +82,8 @@ QWidget {
 }
 
 #navButton[active="true"] {
-    background: #E5F1FF;
-    border-color: #CFE3FF;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #EEF5FF, stop:1 #E5F0FF);
+    border: 1px solid #CFE3FF;
 }
 
 #navButton:disabled {
@@ -89,27 +92,24 @@ QWidget {
 }
 
 #navIcon {
-    color: #7B8CA3;
-    font-size: 16px;
+    color: #4F8CFF;
+    font-size: 15px;
+    font-weight: 700;
 }
 
 #navButton[active="true"] #navIcon {
-    color: #4F8CFF;
+    color: #2F6FD8;
 }
 
 #navText {
-    color: #506176;
+    color: #3577E5;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 650;
 }
 
 #navButton[active="true"] #navText {
-    color: #FFFFFF;
-}
-
-#navButton:disabled #navText,
-#navButton:disabled #navIcon {
-    color: #3577E5;
+    color: #2F6FD8;
+    font-weight: 700;
 }
 
 #workspaceStatus {
@@ -168,9 +168,10 @@ QWidget {
    ============================================================ */
 
 #pageTitle {
-    color: #172033;
-    font-size: 22px;
-    font-weight: 750;
+    color: #101828;
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
 }
 
 #pageSubtitle,
@@ -181,9 +182,10 @@ QWidget {
 }
 
 #sectionTitle {
-    color: #1B2A41;
-    font-size: 15px;
+    color: #122033;
+    font-size: 16px;
     font-weight: 700;
+    letter-spacing: -0.01em;
 }
 
 #sectionDescription {
@@ -208,13 +210,14 @@ QWidget {
 #heroVisual,
 #researchStatus {
     background: #FFFFFF;
-    border: 1px solid #DCE8F7;
-    border-radius: 12px;
+    border: 1px solid #E1EAF5;
+    border-radius: 14px;
 }
 
 #contentCard:hover,
-#quickActionCard:hover {
-    border-color: #C9DDF5;
+#quickActionCard:hover,
+#currentDatasetCard:hover {
+    border-color: #C8DBF7;
 }
 
 #statCard {
@@ -265,8 +268,9 @@ QWidget {
    ============================================================ */
 
 #heroCard {
-    background: #FFFFFF;
-    border-color: #dfe7f2;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #F7FAFF, stop:1 #EEF5FF);
+    border: 1px solid #D9E9FF;
+    border-radius: 18px;
 }
 
 #heroEyebrow {
@@ -277,22 +281,23 @@ QWidget {
 }
 
 #heroTitle {
-    color: #152136;
-    font-size: 26px;
+    color: #13243d;
+    font-size: 28px;
     font-weight: 800;
     line-height: 1.1;
+    letter-spacing: -0.03em;
 }
 
 #heroDescription {
-    color: #69778d;
+    color: #586780;
     font-size: 12px;
-    line-height: 1.5;
+    line-height: 1.6;
 }
 
 #heroButton {
-    background: #4f8cff;
-    border: 1px solid #4f8cff;
-    border-radius: 8px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4F8CFF, stop:1 #3E77EA);
+    border: 1px solid #3E77EA;
+    border-radius: 10px;
     color: #FFFFFF;
     font-size: 11px;
     font-weight: 700;
@@ -396,10 +401,10 @@ QWidget {
 
 #datasetStatusBadge,
 #scoreBadge {
-    background: #f3f6fa;
-    border: 1px solid #e2e7ee;
+    background: #F3F7FF;
+    border: 1px solid #DDEBFF;
     border-radius: 12px;
-    color: #788598;
+    color: #5B6F8F;
     font-size: 9px;
     font-weight: 800;
     padding: 5px 9px;
@@ -418,13 +423,15 @@ QWidget {
 }
 
 #pipelineCard {
-    background: #fbfcfe;
-    border-color: #e2e8f1;
+    background: #F9FBFF;
+    border: 1px solid #E2EBF8;
+    border-radius: 16px;
 }
 
 #pipelineStageCard {
     background: #FFFFFF;
-    border-color: #e1e7ef;
+    border: 1px solid #E5EDF9;
+    border-radius: 12px;
 }
 
 #pipelineStageCard[state="success"] {
