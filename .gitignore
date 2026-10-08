@@ -35,24 +35,29 @@ venv.bak/
 .env
 .env.*
 !.env.example
+.envrc
+.secrets
+.secrets.*
 data/config.json
 *.pem
 *.key
 *.cert
+*.crt
+*.p12
+*.pfx
 *credential*.json
 *secret*.json
+secrets/
+credentials/
+backend/.env
+backend/.env.*
+!backend/.env.example
 
 # =====================================================================
 # Application Runtime Data & Downloads (User Datasets & Cache)
 # =====================================================================
-data/downloads/
-data/cache/
-data/models/
-data/projects/
-data/reports/
-data/versions/
-data/exports/
-data/temp/
+data/*
+!data/.gitkeep
 
 # Large Dataset Files inside data directory
 data/**/*.csv
@@ -76,6 +81,10 @@ data/**/*.joblib
 *.sqlite
 *.sqlite3
 *.db-journal
+*.dump
+*.sql.gz
+*.backup
+*.bak
 
 # =====================================================================
 # Logs & Testing

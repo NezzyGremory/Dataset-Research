@@ -1,8 +1,16 @@
 PySide6
 pandas
+numpy
 python-dotenv
 httpx
 scikit-learn
 pyarrow
 jinja2
 matplotlib
+fastapi
+uvicorn[standard]
+mysql-connector-python
+pydantic
+pytest
+Pillow
+PyInstaller

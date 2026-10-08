@@ -64,6 +64,7 @@ from app.ui.dataset_search_page import DatasetSearchPage
 from app.storage import Database, ProjectRepository, DatasetVersionManager
 from app.reports import ReportGenerator
 from app.core.config import get_data_dir
+from app.telemetry import get_telemetry
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -7876,6 +7877,7 @@ class MainWindow(QMainWindow):
         self.current_project_id = None
 
         self._build_window()
+        get_telemetry().track("app_open", status="started")
 
 
     # =========================================================
@@ -8324,6 +8326,10 @@ class MainWindow(QMainWindow):
         if dataframe is None:
             raise ValueError("No dataset is currently loaded.")
 
+        telemetry = get_telemetry()
+        analysis_started_at = datetime.now().timestamp()
+        telemetry.track("analysis_started", feature_name="dataset_analysis", status="started")
+
         # Pastikan project dan v0 versioning tercatat
         if self.current_file_path and Path(self.current_file_path).exists():
             if self.current_project_id is None:
@@ -8372,30 +8378,45 @@ class MainWindow(QMainWindow):
 
         # Independent analyzers are read-only against the same DataFrame, so
         # they can run concurrently and reduce total Run Analysis latency.
-        result = {}
-        with ThreadPoolExecutor(max_workers=min(7, len(jobs))) as executor:
-            futures = {
-                name: executor.submit(func, frame)
-                for name, (func, frame) in jobs.items()
-            }
-            for name, future in futures.items():
-                result[name] = future.result()
-
-        # Stage 3: Data Quality Diagnosis (4 Pillars)
         try:
-            result["data_quality"] = self.quality_diagnoser.diagnose(
-                dataframe=dataframe,
-                profile=result.get("profile"),
-                missing_values=result.get("missing_values"),
-                duplicates=result.get("duplicates"),
-                outliers=result.get("outliers"),
-                fingerprint=result.get("fingerprint"),
-            )
-        except Exception as dq_err:
-            print(f"Warning: data_quality diagnosis error: {dq_err}")
-            result["data_quality"] = []
+            result = {}
+            with ThreadPoolExecutor(max_workers=min(7, len(jobs))) as executor:
+                futures = {
+                    name: executor.submit(func, frame)
+                    for name, (func, frame) in jobs.items()
+                }
+                for name, future in futures.items():
+                    result[name] = future.result()
 
-        self.analysis_result = result
+            # Stage 3: Data Quality Diagnosis (4 Pillars)
+            try:
+                result["data_quality"] = self.quality_diagnoser.diagnose(
+                    dataframe=dataframe,
+                    profile=result.get("profile"),
+                    missing_values=result.get("missing_values"),
+                    duplicates=result.get("duplicates"),
+                    outliers=result.get("outliers"),
+                    fingerprint=result.get("fingerprint"),
+                )
+            except Exception as dq_err:
+                print(f"Warning: create_initial_version (in-memory): {dq_err}")
+                result["data_quality"] = []
+
+            self.analysis_result = result
+            telemetry.track(
+                "analysis_completed",
+                feature_name="dataset_analysis",
+                status="completed",
+                duration_ms=int((datetime.now().timestamp() - analysis_started_at) * 1000),
+            )
+        except Exception:
+            telemetry.track(
+                "analysis_failed",
+                feature_name="dataset_analysis",
+                status="failed",
+                duration_ms=int((datetime.now().timestamp() - analysis_started_at) * 1000),
+            )
+            raise
 
         self.ml_page.update_dataset()
         self.research_page.show_empty_state()
