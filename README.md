@@ -9,6 +9,7 @@ Dataset Research is a desktop application designed to help **Data Science studen
 For Windows installer prerequisites and build steps, see [Windows Installer](docs/WINDOWS_INSTALLER.md).
 The v3.0.0 GitHub release title, description, and publishing checklist are in [GITHUB_RELEASE_v3.md](docs/GITHUB_RELEASE_v3.md).
 For central usage tracking setup, see [Usage Telemetry Setup](docs/USAGE_TELEMETRY.md).
+Untuk protokol benchmark dan evaluasi kualitas/ML/research, lihat [Protokol Evaluasi](docs/EVALUATION_PROTOCOL.md).
 
 The application combines **dataset analysis, Machine Learning intelligence, NLP, academic literature search, and research analysis** into a single desktop workspace.
 
@@ -20,6 +21,22 @@ Instead of only analyzing a dataset, Dataset Research helps users understand:
 - What previous research has been conducted?
 - How relevant are existing academic papers?
 - What research opportunities may be explored further?
+
+---
+
+# Evaluasi dan Benchmark
+
+Proyek menyediakan runner evaluasi terpisah untuk mengukur deteksi target/task/domain, ranking paper, kandidat research gap, kualitas data, robustness input, dan performa. Evaluasi tidak mengubah alur aplikasi.
+
+Quick DEV (offline, tanpa data eksternal):
+
+```powershell
+python -m evaluation.run --only all --offline --dev --quick
+```
+
+Benchmark dataset publik memerlukan manifest minimal 40 dataset dengan label yang diverifikasi dari sumber resmi. Label paper dan research gap harus diisi oleh penilai manusia; project tidak mengarang angka atau label ground truth. Dataset, snapshot, label, mapping blind, dan hasil lokal tersimpan di `data/evaluation/` dan tidak diunggah ke Git.
+
+TEST adalah evaluasi final satu kali setelah hasil DEV dan label ditinjau. Panduan penyiapan lengkap ada di [Protokol Evaluasi](docs/EVALUATION_PROTOCOL.md).
 
 ---
 

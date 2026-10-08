@@ -4,6 +4,7 @@ numpy
 python-dotenv
 httpx
 scikit-learn
+scipy
 pyarrow
 jinja2
 matplotlib

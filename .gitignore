@@ -58,18 +58,18 @@ backend/.env.*
 # =====================================================================
 data/*
 !data/.gitkeep
+data/evaluation/
 
-# Large Dataset Files inside data directory
-data/**/*.csv
-data/**/*.tsv
-data/**/*.parquet
-data/**/*.feather
-data/**/*.xlsx
-data/**/*.xls
-data/**/*.json
-data/**/*.h5
-data/**/*.pkl
-data/**/*.joblib
+# Dataset files can contain user data; ignore them wherever they are saved.
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.xlsx
+*.xls
+*.h5
+*.pkl
+*.joblib
 
 # Keep empty folder placeholder files
 !data/**/.gitkeep
