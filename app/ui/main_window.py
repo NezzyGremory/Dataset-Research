@@ -44,6 +44,11 @@ from app.analyzer.loader import DatasetLoader
 from app.analyzer.profiler import DatasetProfiler
 from app.analyzer.statistics import DatasetStatistics
 from app.analyzer.missing_values import MissingValueAnalyzer
+from app.analyzer.missing_values import (
+    drop_missing_rows,
+    impute_missing_values,
+    normalize_missing_values,
+)
 from app.analyzer.duplicates import DuplicateAnalyzer
 from app.analyzer.outliers import OutlierAnalyzer
 from app.analyzer.correlations import CorrelationAnalyzer
@@ -2699,6 +2704,11 @@ class AnalysisPage(QWidget):
         clean_dup_btn.clicked.connect(self._handle_remove_duplicates)
         action_row.addWidget(clean_dup_btn)
 
+        export_btn = QPushButton("Ekspor Dataset Aktif (CSV)")
+        export_btn.setObjectName("secondaryButton")
+        export_btn.clicked.connect(self._export_active_dataset)
+        action_row.addWidget(export_btn)
+
         action_row.addStretch()
         layout.addLayout(action_row)
 
@@ -2842,6 +2852,7 @@ class AnalysisPage(QWidget):
         if vm is None or project_id is None or df is None:
             return
 
+        df = normalize_missing_values(df)
         missing_total = int(df.isna().sum().sum())
         if missing_total == 0:
             QMessageBox.information(
@@ -2865,32 +2876,23 @@ class AnalysisPage(QWidget):
         if confirm != QMessageBox.Yes:
             return
 
-        df_imputed = df.copy()
-        imputed_cols = []
-        for col in df_imputed.columns:
-            if df_imputed[col].isna().sum() > 0:
-                if pd.api.types.is_numeric_dtype(df_imputed[col]):
-                    val = df_imputed[col].median()
-                    df_imputed[col] = df_imputed[col].fillna(val)
-                    imputed_cols.append(f"{col} (median: {val})")
-                else:
-                    mode_series = df_imputed[col].mode(dropna=True)
-                    val = mode_series.iloc[0] if not mode_series.empty else "Missing"
-                    df_imputed[col] = df_imputed[col].fillna(val)
-                    imputed_cols.append(f"{col} (modus: {val})")
+        try:
+            df_imputed, cleaning_report = impute_missing_values(df)
+        except ValueError as error:
+            QMessageBox.warning(self, "Pembersihan Tidak Dapat Dilakukan", str(error))
+            return
 
         new_ver = vm.create_version(
             project_id=project_id,
             dataframe=df_imputed,
             operation="impute_missing",
-            parameters={"method": "median_for_numeric_mode_for_categorical"},
-            impact={
-                "missing_before": missing_total,
-                "missing_after": int(df_imputed.isna().sum().sum()),
-                "imputed_columns": len(imputed_cols),
-            },
-            description=f"Imputasi {missing_total:,} nilai kosong pada {len(imputed_cols)} kolom",
-            label="Missing Values Imputed",
+            parameters={"method": "median_numeric_mode_other", **cleaning_report},
+            impact=cleaning_report,
+            description=(
+                f"Imputasi {missing_total:,} nilai kosong; "
+                f"menghapus {len(cleaning_report['dropped_empty_columns'])} kolom kosong total"
+            ),
+            label="Missing Values Cleaned",
         )
 
         self.main_window.current_dataset = df_imputed
@@ -2900,12 +2902,19 @@ class AnalysisPage(QWidget):
         )
         self.run_analysis()
 
-        QMessageBox.information(
+        export_now = QMessageBox.question(
             self,
             "Sukses Imputasi",
             f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
-            f"Seluruh nilai kosong telah berhasil diimputasi."
+            f"Nilai kosong sebelum: {cleaning_report['missing_before']:,}; "
+            f"sesudah: {cleaning_report['missing_after']:,}.\n"
+            f"Kolom kosong total yang dihapus: {len(cleaning_report['dropped_empty_columns'])}.\n\n"
+            "Ekspor dataset hasil imputasi ke file CSV sekarang?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
+        if export_now == QMessageBox.Yes:
+            self._export_active_dataset()
 
     def _handle_drop_missing(self):
         vm = getattr(self.main_window, "version_manager", None)
@@ -2915,21 +2924,29 @@ class AnalysisPage(QWidget):
         if vm is None or project_id is None or df is None:
             return
 
-        rows_with_na = int(df.isna().any(axis=1).sum())
+        try:
+            df_dropped, cleaning_report = drop_missing_rows(df)
+        except ValueError as error:
+            QMessageBox.warning(self, "Drop Missing Tidak Dapat Dilakukan", str(error))
+            return
+
+        rows_with_na = cleaning_report["rows_dropped"]
         if rows_with_na == 0:
             QMessageBox.information(
                 self,
                 "Missing Values",
-                "Dataset pada versi aktif saat ini sudah lengkap (0 baris kosong)."
+                "Dataset pada versi aktif sudah lengkap. Tidak ada baris yang dihapus."
             )
             return
 
         confirm = QMessageBox.question(
             self,
             "Konfirmasi Drop Baris Missing",
-            f"Ditemukan {rows_with_na:,} baris yang memiliki nilai kosong.\n\n"
+            f"Ditemukan {cleaning_report['missing_before']:,} nilai kosong "
+            f"pada {cleaning_report['rows_with_missing']:,} baris.\n\n"
             f"Apakah Anda ingin menghapus baris-baris tersebut?\n"
-            f"(Ukuran dataset akan berkurang dari {len(df):,} menjadi {len(df) - rows_with_na:,} baris)\n\n"
+            f"(Ukuran dataset akan berkurang dari {cleaning_report['rows_before']:,} "
+            f"menjadi {cleaning_report['rows_after']:,} baris)\n\n"
             f"Versi original (v0) tetap aman dan tidak akan berubah.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -2937,17 +2954,24 @@ class AnalysisPage(QWidget):
         if confirm != QMessageBox.Yes:
             return
 
-        df_dropped = df.dropna()
+        # Final guard immediately before persistence: never activate a version
+        # that still contains missing cells.
+        remaining_missing = int(df_dropped.isna().sum().sum())
+        if remaining_missing:
+            QMessageBox.critical(
+                self,
+                "Verifikasi Gagal",
+                f"Dataset hasil drop masih berisi {remaining_missing:,} nilai kosong. "
+                "Versi baru tidak dibuat.",
+            )
+            return
+
         new_ver = vm.create_version(
             project_id=project_id,
             dataframe=df_dropped,
             operation="drop_missing_rows",
-            parameters={"how": "any"},
-            impact={
-                "rows_before": len(df),
-                "rows_after": len(df_dropped),
-                "rows_dropped": rows_with_na,
-            },
+            parameters=cleaning_report,
+            impact=cleaning_report,
             description=f"Drop {rows_with_na:,} baris yang memiliki missing value",
             label="Dropped Missing Rows",
         )
@@ -2959,11 +2983,72 @@ class AnalysisPage(QWidget):
         )
         self.run_analysis()
 
+        export_now = QMessageBox.question(
+            self,
+            "Sukses Bersihkan Missing Values",
+            f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
+            f"{rows_with_na:,} dari {cleaning_report['rows_before']:,} baris telah dihapus.\n"
+            f"Nilai kosong: {cleaning_report['missing_before']:,} sebelum, "
+            f"{remaining_missing:,} sesudah.\n\n"
+            "Ekspor dataset bersih ke file CSV sekarang?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if export_now == QMessageBox.Yes:
+            self._export_active_dataset()
+
+    def _export_active_dataset(self):
+        dataframe = getattr(self.main_window, "current_dataset", None)
+        if dataframe is None or dataframe.empty:
+            QMessageBox.information(
+                self,
+                "Ekspor Dataset",
+                "Tidak ada dataset aktif yang dapat diekspor.",
+            )
+            return
+
+        vm = getattr(self.main_window, "version_manager", None)
+        project_id = getattr(self.main_window, "current_project_id", None)
+        current_version = (
+            vm.get_current_version(project_id)
+            if vm is not None and project_id is not None
+            else None
+        )
+        version_number = current_version.version if current_version else 0
+
+        filename = Path(self.main_window._current_filename()).stem or "dataset"
+        default_name = f"{filename}_v{version_number}_cleaned.csv"
+        export_dir = get_data_dir() / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Ekspor Dataset Aktif",
+            str(export_dir / default_name),
+            "CSV Files (*.csv)",
+        )
+        if not path:
+            return
+
+        export_path = Path(path)
+        if export_path.suffix.lower() != ".csv":
+            export_path = export_path.with_suffix(".csv")
+
+        try:
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            dataframe.to_csv(export_path, index=False, encoding="utf-8-sig")
+        except (OSError, ValueError) as error:
+            QMessageBox.critical(
+                self,
+                "Ekspor Gagal",
+                f"Dataset tidak dapat diekspor.\n\n{error}",
+            )
+            return
+
         QMessageBox.information(
             self,
-            "Sukses",
-            f"Versi baru v{new_ver.version} ({new_ver.label}) berhasil dibuat!\n"
-            f"{rows_with_na:,} baris telah dihapus."
+            "Ekspor Berhasil",
+            f"Dataset aktif berhasil diekspor:\n{export_path}",
         )
 
     def _handle_remove_duplicates(self):

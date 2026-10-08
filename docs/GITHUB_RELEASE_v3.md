@@ -18,6 +18,8 @@ Dataset Research v3.0.0 brings a more adaptable desktop workspace and a proper W
 
 - Responsive PySide6 interface that adapts the sidebar and dashboard layout to different laptop screen sizes.
 - Dataset analysis workspace with interactive charts for exploring distributions, categories, correlations, and missing values.
+- Cleaned dataset export to save the active imputed or missing-row-cleaned version as a CSV file.
+- Missing-value cleaning now imputes numeric columns with the median and categorical, boolean, or date columns with the mode; entirely empty columns are removed and reported.
 - Windows setup installer that creates the application directory, Start Menu shortcut, and Desktop shortcut automatically.
 - Per-user storage for the installed app's database, downloaded datasets, API configuration, and dataset versions.
 - Existing data is copied during migration when found beside a portable executable; original files are not deleted.
@@ -38,7 +40,7 @@ The app stores runtime data under `%LOCALAPPDATA%\Dataset Research`. The install
 
 ### Checks
 
-- Automated test suite: 72 passed
+- Automated test suite: 75 passed
 - PyInstaller Windows payload built successfully
 - Inno Setup installer compiled successfully
 

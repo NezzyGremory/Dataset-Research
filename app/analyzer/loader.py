@@ -7,6 +7,7 @@ import pandas as pd
 
 from app.core.constants import MAX_DATASET_SIZE_MB
 from app.core.exceptions import DatasetLoadError
+from app.analyzer.missing_values import normalize_missing_values
 
 
 class DatasetLoader:
@@ -99,6 +100,8 @@ class DatasetLoader:
             str(column).replace("\ufeff", "").strip()
             for column in dataframe.columns
         ]
+
+        dataframe = normalize_missing_values(dataframe)
 
         return dataframe
 
