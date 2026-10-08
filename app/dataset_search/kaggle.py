@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.core.config import get_data_dir
 from app.dataset_search.huggingface import DatasetFile, DatasetSearchResult
 
 
@@ -241,7 +242,7 @@ class KaggleDatasetClient:
             return (env_user.strip(), env_key.strip())
 
         # 2. Local config data/config.json
-        config_path = Path("data/config.json")
+        config_path = get_data_dir() / "config.json"
         if config_path.exists():
             try:
                 data = json.loads(config_path.read_text(encoding="utf-8"))

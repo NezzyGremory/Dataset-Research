@@ -19,7 +19,7 @@ def get_saved_api_key() -> str | None:
     Mengambil API key dari environment variable atau file konfigurasi lokal.
     Memudahkan aplikasi saat di-compile menjadi .exe tanpa harus setup .env manual.
     """
-    from app.core.config import init_environment
+    from app.core.config import get_data_dir, init_environment
     init_environment()
 
     # 1. Cek environment variable
@@ -28,7 +28,7 @@ def get_saved_api_key() -> str | None:
         return env_key.strip()
 
     # 2. Cek file config lokal data/config.json
-    config_path = Path("data/config.json")
+    config_path = get_data_dir() / "config.json"
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -43,7 +43,9 @@ def get_saved_api_key() -> str | None:
 
 def save_api_key(api_key: str) -> None:
     """Menyimpan API key ke data/config.json agar persisten across session."""
-    config_path = Path("data/config.json")
+    from app.core.config import get_data_dir
+
+    config_path = get_data_dir() / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if config_path.exists():

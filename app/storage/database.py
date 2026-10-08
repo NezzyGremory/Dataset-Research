@@ -4,6 +4,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.core.config import get_data_dir
+
 
 class Database:
     """
@@ -20,9 +22,9 @@ class Database:
 
     def __init__(
         self,
-        db_path: str | Path = "data/dataset_research.db",
+        db_path: str | Path | None = None,
     ):
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path is not None else get_data_dir() / "dataset_research.db"
 
         self.db_path.parent.mkdir(
             parents=True,

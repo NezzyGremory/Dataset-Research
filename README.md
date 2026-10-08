@@ -6,6 +6,9 @@
 
 Dataset Research is a desktop application designed to help **Data Science students and researchers** transform datasets into meaningful research insights.
 
+For Windows installer prerequisites and build steps, see [Windows Installer](docs/WINDOWS_INSTALLER.md).
+The v3.0.0 GitHub release title, description, and publishing checklist are in [GITHUB_RELEASE_v3.md](docs/GITHUB_RELEASE_v3.md).
+
 The application combines **dataset analysis, Machine Learning intelligence, NLP, academic literature search, and research analysis** into a single desktop workspace.
 
 Instead of only analyzing a dataset, Dataset Research helps users understand:

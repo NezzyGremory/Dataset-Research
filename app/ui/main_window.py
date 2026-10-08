@@ -11,9 +11,11 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt, QUrl, QObject, QThread, Signal
-from PySide6.QtGui import QPixmap, QDesktopServices
+from PySide6.QtGui import QIcon, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -56,6 +58,7 @@ from app.research.intelligence import ResearchIntelligenceEngine
 from app.ui.dataset_search_page import DatasetSearchPage
 from app.storage import Database, ProjectRepository, DatasetVersionManager
 from app.reports import ReportGenerator
+from app.core.config import get_data_dir
 
 
 def _resource_path(relative_path: str | Path) -> Path:
@@ -605,6 +608,7 @@ class DashboardPage(QWidget):
         scroll.setObjectName("dashboardScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -627,14 +631,17 @@ class DashboardPage(QWidget):
         hero_brand.setSpacing(16)
 
         hero_logo = QLabel()
+        self.hero_logo = hero_logo
         hero_logo.setObjectName("heroLogo")
         hero_logo.setFixedSize(132, 132)
         hero_logo.setAlignment(Qt.AlignCenter)
 
         logo_path = _resource_path("assets/logo.jpg")
+        self._hero_logo_pixmap = QPixmap()
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
             if not pixmap.isNull():
+                self._hero_logo_pixmap = pixmap
                 hero_logo.setPixmap(
                     pixmap.scaled(
                         132,
@@ -676,6 +683,7 @@ class DashboardPage(QWidget):
         hero_layout.addLayout(hero_brand, 1)
 
         visual = QFrame()
+        self.hero_visual = visual
         visual.setObjectName("heroVisual")
         visual.setFixedWidth(270)
         visual_layout = QVBoxLayout(visual)
@@ -720,29 +728,27 @@ class DashboardPage(QWidget):
         quick_header.addStretch()
         layout.addLayout(quick_header)
 
-        actions_layout = QHBoxLayout()
-        actions_layout.setSpacing(12)
-        actions_layout.addWidget(QuickActionCard(
+        self.actions_layout = QGridLayout()
+        self.actions_layout.setHorizontalSpacing(12)
+        self.actions_layout.setVerticalSpacing(12)
+        self.quick_action_cards = [QuickActionCard(
             "↑", "Upload Dataset",
             "Import a dataset and start a new project.",
             self.main_window.open_upload_page,
-        ))
-        actions_layout.addWidget(QuickActionCard(
+        ), QuickActionCard(
             "◇", "Analyze Dataset",
             "Explore statistics, missing values and outliers.",
             self.main_window.open_analysis_page,
-        ))
-        actions_layout.addWidget(QuickActionCard(
+        ), QuickActionCard(
             "✦", "ML Intelligence",
             "Discover suitable machine learning methods.",
             self.main_window.open_ml_page,
-        ))
-        actions_layout.addWidget(QuickActionCard(
+        ), QuickActionCard(
             "◎", "Academic Research",
             "Find related papers and research opportunities.",
             self.main_window.open_research_page,
-        ))
-        layout.addLayout(actions_layout)
+        )]
+        layout.addLayout(self.actions_layout)
 
         # CURRENT DATASET ---------------------------------------
         dataset_header = QHBoxLayout()
@@ -797,8 +803,9 @@ class DashboardPage(QWidget):
         snapshot_header.addStretch()
         layout.addLayout(snapshot_header)
 
-        chart_row = QHBoxLayout()
-        chart_row.setSpacing(12)
+        self.chart_layout = QGridLayout()
+        self.chart_layout.setHorizontalSpacing(12)
+        self.chart_layout.setVerticalSpacing(12)
         self.publication_chart = MiniLineChart(
             "Publication Trend",
             "Papers by publication year",
@@ -811,10 +818,12 @@ class DashboardPage(QWidget):
             "Research Metrics",
             "Relative magnitude of key outputs",
         )
-        chart_row.addWidget(self.publication_chart, 1)
-        chart_row.addWidget(self.source_chart, 1)
-        chart_row.addWidget(self.metric_chart, 1)
-        layout.addLayout(chart_row)
+        self.research_charts = [
+            self.publication_chart,
+            self.source_chart,
+            self.metric_chart,
+        ]
+        layout.addLayout(self.chart_layout)
 
         # PIPELINE ----------------------------------------------
         pipeline_header = QHBoxLayout()
@@ -830,9 +839,11 @@ class DashboardPage(QWidget):
 
         pipeline_card = QFrame()
         pipeline_card.setObjectName("pipelineCard")
-        pipeline_layout = QHBoxLayout(pipeline_card)
+        pipeline_layout = QGridLayout(pipeline_card)
         pipeline_layout.setContentsMargins(10, 10, 10, 10)
-        pipeline_layout.setSpacing(4)
+        pipeline_layout.setHorizontalSpacing(8)
+        pipeline_layout.setVerticalSpacing(8)
+        self.pipeline_layout = pipeline_layout
 
         pipeline_data = [
             ("Dataset", "Upload"),
@@ -847,17 +858,55 @@ class DashboardPage(QWidget):
         for index, (title, status) in enumerate(pipeline_data):
             stage = PipelineStage(index + 1, title, status.upper())
             self.pipeline_stages.append(stage)
-            pipeline_layout.addWidget(stage, 1)
-            if index < len(pipeline_data) - 1:
-                connector = QLabel("›")
-                connector.setObjectName("pipelineConnector")
-                connector.setAlignment(Qt.AlignCenter)
-                pipeline_layout.addWidget(connector)
         layout.addWidget(pipeline_card)
 
         layout.addStretch()
         scroll.setWidget(container)
         outer.addWidget(scroll)
+        self._apply_responsive_layout(self.width())
+
+    @staticmethod
+    def _reflow_grid(grid, widgets, columns):
+        for column in range(grid.columnCount()):
+            grid.setColumnStretch(column, 0)
+
+        for widget in widgets:
+            grid.removeWidget(widget)
+
+        for index, widget in enumerate(widgets):
+            grid.addWidget(widget, index // columns, index % columns)
+
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
+
+    def _apply_responsive_layout(self, width):
+        compact = width < 760
+        margins = 14 if compact else 20 if width < 980 else 28
+        self.layout().setContentsMargins(margins, 16, margins, 20)
+
+        self.hero_visual.setVisible(width >= 900)
+        logo_size = 132 if width >= 900 else 88
+        self.hero_logo.setFixedSize(logo_size, logo_size)
+        if not self._hero_logo_pixmap.isNull():
+            self.hero_logo.setPixmap(
+                self._hero_logo_pixmap.scaled(
+                    logo_size,
+                    logo_size,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+
+        action_columns = 4 if width >= 1100 else 2 if width >= 640 else 1
+        chart_columns = 3 if width >= 1040 else 2 if width >= 680 else 1
+        pipeline_columns = 4 if width >= 1000 else 3 if width >= 720 else 2
+        self._reflow_grid(self.actions_layout, self.quick_action_cards, action_columns)
+        self._reflow_grid(self.chart_layout, self.research_charts, chart_columns)
+        self._reflow_grid(self.pipeline_layout, self.pipeline_stages, pipeline_columns)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
 
     def update_dataset(self, dataframe, filename):
         if dataframe is None:
@@ -1000,14 +1049,20 @@ class UploadPage(QWidget):
         self.build_ui()
 
     def build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        layout = QVBoxLayout(self)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
-        layout.setContentsMargins(
-            35, 30, 35, 30
-        )
-
-        layout.setSpacing(20)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(35, 26, 35, 26)
+        layout.setSpacing(18)
 
         # =================================================
         # HEADER
@@ -1193,6 +1248,9 @@ class UploadPage(QWidget):
         )
 
         layout.addStretch()
+
+        self.scroll.setWidget(container)
+        root.addWidget(self.scroll)
 
     # =====================================================
     # SELECT DATASET
@@ -7690,8 +7748,25 @@ class MainWindow(QMainWindow):
         self._load_stylesheet()
 
         self.setWindowTitle("Dataset Research")
-        self.resize(1180, 720)
-        self.setMinimumSize(1100, 680)
+        app_icon = _resource_path("assets/dataset_research.ico")
+        if app_icon.exists():
+            self.setWindowIcon(QIcon(str(app_icon)))
+
+        # Keep the window within the usable screen area, including display scaling.
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            max_w = max(480, avail.width() - 32)
+            max_h = max(400, avail.height() - 48)
+            min_w = min(760, max(560, int(max_w * 0.72)))
+            min_h = min(540, max(420, int(max_h * 0.72)))
+            initial_w = min(1200, max(min_w, int(max_w * 0.92)))
+            initial_h = min(750, max(min_h, int(max_h * 0.92)))
+            self.resize(initial_w, initial_h)
+            self.setMinimumSize(min_w, min_h)
+        else:
+            self.resize(1100, 680)
+            self.setMinimumSize(560, 420)
 
         self.current_dataset = None
         self.current_file_path = None
@@ -7709,7 +7784,10 @@ class MainWindow(QMainWindow):
 
         self.database = Database()
         self.repository = ProjectRepository(self.database)
-        self.version_manager = DatasetVersionManager(self.database)
+        self.version_manager = DatasetVersionManager(
+            self.database,
+            data_dir=get_data_dir(),
+        )
         self.current_project_id = None
 
         self._build_window()
@@ -7810,13 +7888,22 @@ class MainWindow(QMainWindow):
     # =========================================================
 
     def _build_sidebar(self):
-        sidebar = QFrame()
+        sidebar_scroll = QScrollArea()
+        self.sidebar_scroll = sidebar_scroll
+        sidebar_scroll.setObjectName("sidebarScroll")
+        sidebar_scroll.setFixedWidth(250)
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setFrameShape(QFrame.NoFrame)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(250)
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(6)
+        self.sidebar_layout = layout
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(5)
 
         brand = QHBoxLayout()
         brand.setSpacing(10)
@@ -7841,7 +7928,10 @@ class MainWindow(QMainWindow):
         else:
             logo.setText("DR")
 
-        brand_text = QVBoxLayout()
+        brand_text_container = QWidget()
+        self.brand_text_container = brand_text_container
+        brand_text = QVBoxLayout(brand_text_container)
+        brand_text.setContentsMargins(0, 0, 0, 0)
         brand_text.setSpacing(0)
 
         title = QLabel("DATASET")
@@ -7858,16 +7948,18 @@ class MainWindow(QMainWindow):
         brand_text.addWidget(subtitle)
 
         brand.addWidget(logo)
-        brand.addLayout(brand_text, 1)
+        brand.addWidget(brand_text_container, 1)
         layout.addLayout(brand)
 
         layout.addSpacing(20)
 
         workspace = QLabel("WORKSPACE")
         workspace.setObjectName("sectionLabel")
+        self.sidebar_section_labels = [workspace]
         layout.addWidget(workspace)
 
         self.nav_buttons = {}
+        self.nav_text_widgets = []
 
         self._add_nav_button(layout, "dashboard", "⌂", "Dashboard")
         self._add_nav_button(layout, "dataset", "▣", "Dataset")
@@ -7880,6 +7972,7 @@ class MainWindow(QMainWindow):
 
         tools = QLabel("RESEARCH TOOLS")
         tools.setObjectName("sectionLabel")
+        self.sidebar_section_labels.append(tools)
         layout.addWidget(tools)
 
         for key, icon, text, enabled in [
@@ -7900,6 +7993,7 @@ class MainWindow(QMainWindow):
         layout.addStretch()
 
         status_card = QFrame()
+        self.sidebar_status_card = status_card
         status_card.setObjectName("workspaceStatus")
         status_layout = QVBoxLayout(status_card)
         status_layout.setContentsMargins(13, 11, 13, 11)
@@ -7915,11 +8009,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(status_card)
 
         footer = QLabel("Dataset Research\n© 2024 Sains Data")
+        self.sidebar_footer = footer
         footer.setObjectName("sidebarFooter")
         footer.setWordWrap(True)
         layout.addWidget(footer)
 
-        return sidebar
+        sidebar_scroll.setWidget(sidebar)
+        return sidebar_scroll
 
     def _add_nav_button(self, layout, key, icon, text, enabled=True, tool_item=False):
         button = QPushButton()
@@ -7941,6 +8037,8 @@ class MainWindow(QMainWindow):
 
         text_label = QLabel(text)
         text_label.setObjectName("navText")
+        self.nav_text_widgets.append(text_label)
+        button.setToolTip(text)
 
         row.addWidget(icon_label)
         row.addWidget(text_label)
@@ -7988,6 +8086,28 @@ class MainWindow(QMainWindow):
         layout.addWidget(status)
 
         return topbar
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        sidebar = getattr(self, "sidebar_scroll", None)
+        if sidebar is None:
+            return
+
+        compact = event.size().width() < 1080
+        sidebar.setFixedWidth(72 if compact else 250)
+        self.sidebar_layout.setContentsMargins(
+            8 if compact else 16,
+            16,
+            8 if compact else 16,
+            16,
+        )
+        self.brand_text_container.setVisible(not compact)
+        for label in self.nav_text_widgets:
+            label.setVisible(not compact)
+        for label in self.sidebar_section_labels:
+            label.setVisible(not compact)
+        self.sidebar_status_card.setVisible(not compact)
+        self.sidebar_footer.setVisible(not compact)
 
     # =========================================================
     # NAVIGATION

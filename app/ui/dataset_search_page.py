@@ -27,6 +27,7 @@ from app.dataset_search.huggingface import (
     HuggingFaceDatasetClient,
 )
 from app.dataset_search.kaggle import KaggleDatasetClient
+from app.core.config import get_data_dir
 
 
 class DatasetSearchWorker(QObject):
@@ -578,8 +579,7 @@ class DatasetSearchPage(QWidget):
         )
 
     def _download_directory(self) -> Path:
-        project_root = Path(__file__).resolve().parents[2]
-        destination = project_root / "data" / "downloads"
+        destination = get_data_dir() / "downloads"
         destination.mkdir(parents=True, exist_ok=True)
         return destination
 
