@@ -8,6 +8,7 @@ Dataset Research is a desktop application designed to help **Data Science studen
 
 For Windows installer prerequisites and build steps, see [Windows Installer](docs/WINDOWS_INSTALLER.md).
 The v3.0.0 GitHub release title, description, and publishing checklist are in [GITHUB_RELEASE_v3.md](docs/GITHUB_RELEASE_v3.md).
+For central usage tracking setup, see [Usage Telemetry Setup](docs/USAGE_TELEMETRY.md).
 
 The application combines **dataset analysis, Machine Learning intelligence, NLP, academic literature search, and research analysis** into a single desktop workspace.
 
@@ -599,17 +600,16 @@ Semantic similarity should be interpreted as a **similarity measure**, not proof
 
 | Category             | Technology                    |
 | -------------------- | ----------------------------- |
-| Programming Language | Python 3.11+                  |
+| Programming Language | Python                        |
 | Desktop GUI          | PySide6                       |
-| Data Analysis        | Pandas, NumPy, SciPy          |
+| Data Analysis        | Pandas, NumPy                 |
 | Machine Learning     | Scikit-learn                  |
-| Optional ML          | XGBoost, LightGBM             |
-| NLP                  | TF-IDF, Sentence Transformers |
 | Academic Search      | OpenAlex, Crossref            |
 | HTTP Client          | HTTPX                         |
-| Database             | SQLite                        |
-| ORM                  | SQLAlchemy                    |
-| Configuration        | Pydantic, Python Dotenv       |
+| Local Project Data   | SQLite                        |
+| Usage Event Storage  | MySQL                         |
+| Usage API            | FastAPI                       |
+| Configuration        | Python Dotenv                 |
 | UI Styling           | Qt Style Sheets (QSS)         |
 | Reporting            | Jinja2 / HTML                 |
 | Packaging            | PyInstaller                   |
@@ -621,83 +621,27 @@ Semantic similarity should be interpreted as a **similarity measure**, not proof
 
 ```text
 Dataset-Research/
-│
-├── app/
-│   │
-│   ├── analyzer/
-│   │   ├── loader.py
-│   │   ├── profiler.py
-│   │   ├── statistics.py
-│   │   ├── missing_values.py
-│   │   ├── duplicates.py
-│   │   ├── outliers.py
-│   │   ├── correlations.py
-│   │   └── fingerprint.py
-│   │
-│   ├── ml/
-│   │   ├── task_detector.py
-│   │   ├── target_detector.py
-│   │   ├── method_recommender.py
-│   │   ├── method_info.py
-│   │   └── evaluation.py
-│   │
-│   ├── nlp/
-│   │   ├── keyword_extractor.py
-│   │   ├── domain_detector.py
-│   │   ├── embeddings.py
-│   │   └── similarity.py
-│   │
-│   ├── research/
-│   │   ├── openalex.py
-│   │   ├── crossref.py
-│   │   ├── paper.py
-│   │   ├── search.py
-│   │   ├── deduplication.py
-│   │   ├── query_builder.py
-│   │   ├── paper_analyzer.py
-│   │   ├── ranking.py
-│   │   ├── landscape.py
-│   │   ├── gap_analyzer.py
-│   │   ├── trend_analyzer.py
-│   │   └── intelligence.py
-│   │
-│   ├── storage/
-│   │   ├── database.py
-│   │   ├── models.py
-│   │   ├── repository.py
-│   │   └── project_repository.py
-│   │
-│   ├── reports/
-│   │   ├── generator.py
-│   │   └── templates/
-│   │       └── report.html
-│   │
-│   ├── ui/
-│   │   ├── main_window.py
-│   │   ├── app.qss
-│   │   └── assets/
-│   │       └── logo.jpg
-│   │
-│   └── main.py
-│
-├── screenshots/
-│   ├── 1.png
-│   ├── 2.png
-│   ├── 3.png
-│   ├── 4.png
-│   ├── 5.png
-│   ├── 6.png
-│   ├── 7.png
-│   ├── 8.png
-│   └── 9.png
-│
-├── tests/
-├── config/
-├── requirements.txt
-├── run.py
-├── build_dataset_research.bat
-├── README.md
-└── Dataset Research.spec
+|-- app/
+|   |-- analyzer/       Dataset profiling and analysis
+|   |-- ai/             Local and Gemini explanations
+|   |-- core/           App configuration and utilities
+|   |-- ml/             ML task detection and recommendations
+|   |-- research/       Academic search and research analysis
+|   |-- storage/        Local SQLite project storage
+|   |-- ui/             PySide6 desktop interface
+|   |-- main.py
+|   `-- telemetry.py    Privacy-limited usage event client
+|-- backend/
+|   |-- api.py          FastAPI event receiver
+|   `-- requirements.txt
+|-- docs/
+|   |-- USAGE_TELEMETRY.md
+|   `-- WINDOWS_INSTALLER.md
+|-- mysql_setup.sql     MySQL event table, view, and report queries
+|-- tests/
+|-- requirements.txt
+|-- run.py
+`-- build_windows_installer.bat
 ```
 
 ---
@@ -746,7 +690,7 @@ Dataset Research can be packaged as a Windows application using **PyInstaller**.
 For the project build, the repository includes:
 
 ```text
-build_dataset_research.bat
+build_windows_installer.bat
 ```
 
 The build configuration also includes the application logo resource:
@@ -755,7 +699,38 @@ The build configuration also includes the application logo resource:
 app/ui/assets/logo.jpg
 ```
 
-After building the application, the executable can be found under the generated `dist/` directory according to the selected PyInstaller configuration.
+The build creates the Windows installer in `hasil_compile/` and the standalone application files in `hasil_compile/payload/`.
+
+---
+
+# Usage Telemetry
+
+Dataset Research can send limited usage events to a central MySQL database through the FastAPI backend. This is separate from the local SQLite database used for projects and datasets.
+
+The desktop app can send these events:
+
+- `app_open`
+- `analysis_started`
+- `analysis_completed`
+- `analysis_failed`
+
+Each event contains an installation ID, event name, feature name, status, duration, app version, and timestamp. Dataset contents, file paths, analysis results, user input, and API keys are not included. Telemetry is optional; it is disabled when `TELEMETRY_API_URL` is empty. Events are sent in the background and may be missed when the API is unavailable.
+
+## Local Development
+
+1. Create the MySQL database and event table by running `mysql_setup.sql` in MySQL Workbench. Follow the comments in that file to create separate API and admin accounts with strong passwords.
+2. Copy `backend/.env.example` to `backend/.env` and configure the MySQL connection using the API account. Keep this file private; it is ignored by Git.
+3. Install the project dependencies with `pip install -r requirements.txt`.
+4. Start the API from the project root:
+
+   ```powershell
+   python -m uvicorn backend.api:app --host 127.0.0.1 --port 8000
+   ```
+
+5. Set `TELEMETRY_API_URL=http://127.0.0.1:8000` in the desktop `.env` file and run `python run.py`.
+6. View daily usage in MySQL Workbench with `SELECT * FROM vw_daily_usage ORDER BY report_date DESC;`.
+
+The local URL only works while the API and MySQL are running on the same computer. For production, deploy the API and MySQL on an always-on server, use HTTPS for the API, and set the desktop app's API URL to that server. Never put MySQL credentials in the desktop app. The API account should only have `INSERT` permission, while the separate admin account should only have read access. See [Usage Telemetry Setup](docs/USAGE_TELEMETRY.md) for more detail.
 
 ---
 
@@ -933,6 +908,8 @@ In particular:
 - [x] Research Gap tool
 - [x] Research Report tool
 - [x] SQLite local storage
+- [x] Privacy-limited usage events in the desktop app
+- [x] FastAPI event receiver and MySQL daily usage view for local development
 - [x] PySide6 desktop interface
 - [x] Windows executable build
 
@@ -946,6 +923,7 @@ In particular:
 - [ ] Improved data visualization
 - [ ] Project export/import
 - [ ] Advanced experiment evaluation
+- [ ] Deploy the usage API and MySQL database to an always-on production server
 
 ---
 
