@@ -68,6 +68,14 @@ data/evaluation/
 *.xlsx
 *.xls
 *.h5
+*.hdf5
+*.jsonl
+*.arff
+*.sav
+*.dta
+*.rds
+*.npy
+*.npz
 *.pkl
 *.joblib
 
@@ -92,10 +100,14 @@ data/evaluation/
 *.log
 logs/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
 .coverage
 htmlcov/
 .tox/
 .nox/
+*.prof
 
 # =====================================================================
 # Build & Compilation (PyInstaller / PySide / C extensions)
@@ -104,6 +116,16 @@ build/
 dist/
 hasil_compile/
 *.spec
+!Dataset\ Research.spec
+*.exe
+*.dll
+*.pyd
+*.whl
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
 
 # =====================================================================
 # IDEs & OS Specific Files

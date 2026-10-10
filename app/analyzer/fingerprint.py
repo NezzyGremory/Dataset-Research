@@ -757,8 +757,9 @@ class DatasetFingerprint:
         Generate numeric statistics.
         """
 
-        if not pd.api.types.is_numeric_dtype(
-            series
+        if (
+            pd.api.types.is_bool_dtype(series)
+            or not pd.api.types.is_numeric_dtype(series)
         ):
             return None
 

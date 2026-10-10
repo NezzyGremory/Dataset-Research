@@ -32,7 +32,22 @@ class DatasetStatistics:
                 ),
             }
 
-            if pd.api.types.is_numeric_dtype(series):
+            # Boolean values are categories, not continuous measurements.
+            # Treating them as numeric can route them through reducers such as
+            # skewness that may subtract boolean arrays on some NumPy versions.
+            if pd.api.types.is_bool_dtype(series):
+                value_counts = series.value_counts(dropna=True)
+                result.update(
+                    {
+                        "category_count": unique_count,
+                        "top_values": [
+                            {"value": str(value), "frequency": int(frequency)}
+                            for value, frequency in value_counts.head(5).items()
+                        ],
+                    }
+                )
+
+            elif pd.api.types.is_numeric_dtype(series):
                 result.update(
                     {
                         "mean": float(series.mean())

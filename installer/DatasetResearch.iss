@@ -1,5 +1,5 @@
 #define AppName "Dataset Research"
-#define AppVersion "3.0.0"
+#define AppVersion "4.0.0"
 #define AppPublisher "Dataset Research"
 #define AppExeName "Dataset Research.exe"
 
@@ -13,11 +13,11 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\hasil_compile
-OutputBaseFilename=DatasetResearch-v3.0.0-Setup
+OutputBaseFilename=DatasetResearch-v{#AppVersion}-Setup
 SetupIconFile=..\app\ui\assets\dataset_research.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesInstallIn64BitMode=x64
-Compression=lzma2
+Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes

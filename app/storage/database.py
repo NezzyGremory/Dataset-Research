@@ -111,6 +111,18 @@ class Database:
                         ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS project_workflows (
+                    project_id INTEGER PRIMARY KEY,
+                    analysis_result_json TEXT,
+                    ml_task_result_json TEXT,
+                    ml_methods_result_json TEXT,
+                    research_result_json TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id)
+                        REFERENCES projects(id)
+                        ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS papers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
 

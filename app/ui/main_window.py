@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from html import escape as html_escape
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
+import time
 from typing import Any, Dict
+from urllib.parse import urlparse
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import Qt, QUrl, QObject, QThread, Signal
-from PySide6.QtGui import QIcon, QPixmap, QDesktopServices
+from PySide6.QtCore import Qt, QUrl, QObject, QThread, QTimer, Signal, QMarginsF
+from PySide6.QtGui import QIcon, QPixmap, QDesktopServices, QTextDocument, QFont, QPageSize, QPageLayout
+from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -31,8 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
-    QListWidget,
-    QListWidgetItem,
+    QTextBrowser,
     QLineEdit,
     QProgressBar,
     QHeaderView,
@@ -56,11 +59,13 @@ from app.analyzer.fingerprint import DatasetFingerprint
 from app.analyzer.data_quality import DataQualityDiagnoser
 from app.ai.gemini_explainer import GeminiDatasetExplainer, get_saved_api_key, save_api_key
 from app.ai.local_explainer import LocalAcademicExplainer
+from app.ai.research_gap_explainer import ResearchGapExplainer
 from app.ml.task_detector import MLTaskDetector
 from app.ml.method_recommender import MethodRecommender
 from app.ml.intelligence import MLIntelligenceEngine
 from app.research.intelligence import ResearchIntelligenceEngine
 from app.ui.dataset_search_page import DatasetSearchPage
+from app.ui.dataset_preview_page import DatasetPreviewPage
 from app.storage import Database, ProjectRepository, DatasetVersionManager
 from app.reports import ReportGenerator
 from app.core.config import get_data_dir
@@ -99,6 +104,242 @@ class GeminiExplainWorker(QObject):
                 self.finished.emit(local_text, "local")
             except Exception as local_exc:
                 self.failed.emit(str(local_exc))
+
+
+class DatasetAnalysisWorker(QObject):
+    """Run the complete dataset analysis away from the GUI thread."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, analyzers: dict, quality_diagnoser, dataframe):
+        super().__init__()
+        self.analyzers = analyzers
+        self.quality_diagnoser = quality_diagnoser
+        self.dataframe = dataframe
+
+    def run(self):
+        try:
+            with ThreadPoolExecutor(max_workers=len(self.analyzers)) as executor:
+                futures = {
+                    name: executor.submit(analyzer, self.dataframe)
+                    for name, analyzer in self.analyzers.items()
+                }
+                result = {}
+                for name, future in futures.items():
+                    try:
+                        result[name] = future.result()
+                    except Exception as error:
+                        raise RuntimeError(f"{name} analysis failed: {error}") from error
+
+            try:
+                result["data_quality"] = self.quality_diagnoser.diagnose(
+                    dataframe=self.dataframe,
+                    profile=result.get("profile"),
+                    missing_values=result.get("missing_values"),
+                    duplicates=result.get("duplicates"),
+                    outliers=result.get("outliers"),
+                    fingerprint=result.get("fingerprint"),
+                )
+            except Exception as error:
+                print(f"Warning: data quality diagnosis failed: {error}")
+                result["data_quality"] = []
+
+            self.finished.emit(result)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class MLTrainingWorker(QObject):
+    """Run the configured full ML evaluation without blocking the GUI."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, intelligence_engine, dataframe, fingerprint):
+        super().__init__()
+        self.intelligence_engine = intelligence_engine
+        self.dataframe = dataframe
+        self.fingerprint = fingerprint
+
+    def run(self):
+        try:
+            # Keep the full evaluation path and all configured estimators.
+            result = self.intelligence_engine.analyze(
+                dataframe=self.dataframe,
+                fingerprint=self.fingerprint,
+                evaluate_models=True,
+            )
+            self.finished.emit(result)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class AcademicResearchWorker(QObject):
+    """Run literature retrieval and research synthesis outside the GUI thread."""
+
+    finished = Signal(object, object)
+    failed = Signal(str)
+
+    def __init__(self, engine, task_detector, dataframe, fingerprint):
+        super().__init__()
+        self.engine = engine
+        self.task_detector = task_detector
+        self.dataframe = dataframe
+        self.fingerprint = fingerprint
+
+    def run(self):
+        try:
+            try:
+                ml_result = dict(self.task_detector.detect(self.fingerprint))
+            except Exception:
+                ml_result = {
+                    "status": "ESTIMATION", "primary_task": None,
+                    "tasks": [], "task_count": 0,
+                }
+            ml_result["dataset"] = {
+                "rows": int(self.dataframe.shape[0]),
+                "columns": int(self.dataframe.shape[1]),
+                "numeric_features": int(
+                    self.dataframe.select_dtypes(include="number").shape[1]
+                ),
+            }
+            result = self.engine.analyze(
+                dataframe=self.dataframe,
+                fingerprint=self.fingerprint,
+                ml_result=ml_result,
+                search_limit=20,
+                max_queries=5,
+            )
+            self.finished.emit(result, ml_result)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class ResearchGapExplanationWorker(QObject):
+    finished = Signal(str, str, str)
+    failed = Signal(str)
+
+    def __init__(self, gaps):
+        super().__init__()
+        self.gaps = gaps
+
+    def run(self):
+        try:
+            explanation, source, reason = ResearchGapExplainer().explain(self.gaps)
+            self.finished.emit(explanation, source, reason)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class ReportGenerationWorker(QObject):
+    """Build report markup and chart images without blocking the Qt UI."""
+
+    finished = Signal(str, str)
+    failed = Signal(str)
+
+    def __init__(self, dataset_name, analysis_data, ml_data, research_data, dataframe, chart_dir):
+        super().__init__()
+        self.dataset_name = dataset_name
+        self.analysis_data = analysis_data
+        self.ml_data = ml_data
+        self.research_data = research_data
+        self.dataframe = dataframe
+        self.chart_dir = chart_dir
+
+    def run(self):
+        try:
+            content = ReportGenerator().generate(
+                dataset_name=self.dataset_name,
+                analysis_data=self.analysis_data,
+                ml_data=self.ml_data,
+                research_data=self.research_data,
+                metadata={"dataframe": self.dataframe, "chart_dir": self.chart_dir},
+            )
+            self.finished.emit(content, self.chart_dir)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class ReportPdfWorker(QObject):
+    """Render the prepared report to PDF away from the UI thread."""
+
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, content, chart_dir, output_path):
+        super().__init__()
+        self.content = content
+        self.chart_dir = chart_dir
+        self.output_path = output_path
+
+    def run(self):
+        try:
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(self.output_path)
+            layout = QPageLayout(
+                QPageSize(QPageSize.A4), QPageLayout.Portrait,
+                QMarginsF(18, 18, 18, 18), QPageLayout.Millimeter,
+            )
+            printer.setPageLayout(layout)
+            document = QTextDocument()
+            document.setDefaultFont(QFont("Times New Roman", 11))
+            if self.chart_dir:
+                document.setBaseUrl(QUrl.fromLocalFile(Path(self.chart_dir).as_posix() + "/"))
+            document.setHtml(self.content)
+            document.print_(printer)
+            output = Path(self.output_path)
+            if not output.is_file() or output.stat().st_size == 0:
+                raise OSError("File PDF tidak berhasil dibuat.")
+            self.finished.emit(str(output))
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class LoadingCard(QFrame):
+    """Visible animated progress state shared by long-running feature pages."""
+
+    def __init__(self, title: str, description: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("contentCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(26, 24, 26, 24)
+        layout.setSpacing(12)
+
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("sectionTitle")
+        self.description_label = QLabel(description)
+        self.description_label.setObjectName("cardDescription")
+        self.description_label.setWordWrap(True)
+
+        self.spinner_label = QLabel("◌")
+        self.spinner_label.setObjectName("loadingSpinner")
+        self.spinner_label.setAlignment(Qt.AlignCenter)
+        self.spinner_label.setFixedWidth(32)
+        self._spinner_frames = ("◌", "◔", "◑", "◕", "●", "◕", "◑", "◔")
+        self._spinner_index = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(110)
+        self._timer.timeout.connect(self._advance_spinner)
+        self._timer.start()
+
+        heading = QHBoxLayout()
+        heading.addWidget(self.spinner_label)
+        heading.addWidget(self.title_label, 1)
+        layout.addLayout(heading)
+        layout.addWidget(self.description_label)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("loadingProgress")
+        self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(7)
+        layout.addWidget(self.progress)
+
+    def _advance_spinner(self):
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+        self.spinner_label.setText(self._spinner_frames[self._spinner_index])
 
 
 class StatCard(QFrame):
@@ -196,7 +437,7 @@ class QuickActionCard(QFrame):
         )
 
         self.setMinimumHeight(
-            132
+            108
         )
 
         layout = QVBoxLayout(
@@ -324,81 +565,45 @@ class PipelineStage(QFrame):
         status="WAITING",
     ):
         super().__init__()
-
+        self.number = number
         self.setObjectName(
             "pipelineStageCard"
         )
-
-        self.setMinimumHeight(
-            76
-        )
+        self.setMinimumHeight(88)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QVBoxLayout(
             self
         )
-
         layout.setContentsMargins(
-            11,
-            9,
-            11,
-            9,
+            8,
+            10,
+            8,
+            10,
         )
+        layout.setSpacing(4)
+        layout.setAlignment(Qt.AlignTop)
 
-        layout.setSpacing(
-            2
-        )
+        self.marker_label = QLabel(str(number))
+        self.marker_label.setObjectName("pipelineMarker")
+        self.marker_label.setFixedSize(28, 28)
+        self.marker_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.marker_label, 0, Qt.AlignHCenter)
 
-        # -------------------------------------------------
-        # NUMBER
-        # -------------------------------------------------
-
-        number_label = QLabel(
-            f"{number:02d}"
-        )
-
-        number_label.setObjectName(
-            "pipelineNumber"
-        )
-
-        layout.addWidget(
-            number_label
-        )
-
-        # -------------------------------------------------
-        # TITLE
-        # -------------------------------------------------
-
-        title_label = QLabel(
-            title
-        )
-
-        title_label.setObjectName(
-            "pipelineTitle"
-        )
-
-        title_label.setWordWrap(
-            True
-        )
-
-        layout.addWidget(
-            title_label
-        )
-
-        # -------------------------------------------------
-        # STATUS
-        # -------------------------------------------------
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("pipelineTitle")
+        self.title_label.setAlignment(Qt.AlignHCenter)
+        self.title_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
 
         self.status_label = QLabel(
             status
         )
-
         self.status_label.setObjectName(
             "pipelineStatus"
         )
-
-        layout.addWidget(
-            self.status_label
-        )
+        self.status_label.setAlignment(Qt.AlignHCenter)
+        layout.addWidget(self.status_label)
 
     def set_status(
         self,
@@ -410,6 +615,10 @@ class PipelineStage(QFrame):
             status
         )
 
+        # Keep the step number visible in every state; the color and READY
+        # label communicate completion without an emoji or decorative icon.
+        self.marker_label.setText(str(self.number))
+
         self.setProperty(
             "state",
             state
@@ -419,6 +628,7 @@ class PipelineStage(QFrame):
             "state",
             state
         )
+        self.marker_label.setProperty("state", state)
 
         style = self.style()
 
@@ -429,6 +639,8 @@ class PipelineStage(QFrame):
         style.polish(
             self
         )
+        self.marker_label.style().unpolish(self.marker_label)
+        self.marker_label.style().polish(self.marker_label)
 
         self.update()
 
@@ -461,22 +673,25 @@ class MiniLineChart(QFrame):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        card_rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(QPen(QColor("#DCE6F3"), 1))
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawRoundedRect(card_rect, 14, 14)
 
         painter.setPen(QColor("#17304E"))
         title_font = QFont(self.font())
         title_font.setBold(True)
-        title_font.setPointSize(10)
+        title_font.setPointSize(12)
         painter.setFont(title_font)
         painter.drawText(16, 22, self._title)
 
         painter.setPen(QColor("#7C8BA0"))
         sub_font = QFont(self.font())
-        sub_font.setPointSize(8)
+        sub_font.setPointSize(10)
         painter.setFont(sub_font)
         painter.drawText(16, 37, self._subtitle)
 
-        chart = QRectF(18, 50, max(40, self.width() - 34), max(70, self.height() - 72))
+        chart = QRectF(18, 52, max(40, self.width() - 36), max(64, self.height() - 82))
         painter.setPen(QPen(QColor("#E8EEF6"), 1))
         for frac in (0.0, 0.5, 1.0):
             y = chart.top() + chart.height() * frac
@@ -508,14 +723,34 @@ class MiniLineChart(QFrame):
 
         painter.setPen(QColor("#7C8BA0"))
         painter.setFont(sub_font)
-        for i, label in enumerate(self._labels):
+        max_labels = max(2, min(6, int(chart.width() // 70)))
+        if n <= max_labels:
+            label_indexes = list(range(n))
+        else:
+            stride = max(1, (n - 1 + max_labels - 2) // (max_labels - 1))
+            label_indexes = list(range(0, n, stride))
+            if label_indexes[-1] != n - 1:
+                label_indexes.append(n - 1)
+
+        for i in label_indexes:
+            label = self._labels[i]
             if n == 1:
                 x = chart.left()
             else:
                 x = chart.left() + chart.width() * i / (n - 1)
-            text = label
-            rect = QRectF(x - 28, chart.bottom() + 3, 56, 15)
-            painter.drawText(rect, Qt.AlignHCenter | Qt.AlignTop, text)
+            if n == 1:
+                rect = QRectF(x - 30, chart.bottom() + 3, 60, 17)
+                alignment = Qt.AlignHCenter
+            elif i == 0:
+                rect = QRectF(chart.left(), chart.bottom() + 3, 60, 17)
+                alignment = Qt.AlignLeft
+            elif i == n - 1:
+                rect = QRectF(chart.right() - 60, chart.bottom() + 3, 60, 17)
+                alignment = Qt.AlignRight
+            else:
+                rect = QRectF(x - 30, chart.bottom() + 3, 60, 17)
+                alignment = Qt.AlignHCenter
+            painter.drawText(rect, alignment | Qt.AlignTop, label)
 
         painter.end()
 
@@ -549,22 +784,25 @@ class MiniBarChart(QFrame):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#FFFFFF"))
+        card_rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(QPen(QColor("#DCE6F3"), 1))
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawRoundedRect(card_rect, 14, 14)
 
         painter.setPen(QColor("#17304E"))
         title_font = QFont(self.font())
         title_font.setBold(True)
-        title_font.setPointSize(10)
+        title_font.setPointSize(12)
         painter.setFont(title_font)
         painter.drawText(16, 22, self._title)
 
         painter.setPen(QColor("#7C8BA0"))
         sub_font = QFont(self.font())
-        sub_font.setPointSize(8)
+        sub_font.setPointSize(10)
         painter.setFont(sub_font)
         painter.drawText(16, 37, self._subtitle)
 
-        chart = QRectF(18, 50, max(40, self.width() - 34), max(70, self.height() - 72))
+        chart = QRectF(18, 52, max(40, self.width() - 36), max(64, self.height() - 82))
         painter.setPen(QPen(QColor("#E8EEF6"), 1))
         painter.drawLine(chart.left(), chart.bottom(), chart.right(), chart.bottom())
 
@@ -590,7 +828,7 @@ class MiniBarChart(QFrame):
             painter.drawRoundedRect(QRectF(x, y, bar_width, bar_h), 4, 4)
 
             painter.setPen(QColor("#718096"))
-            label_rect = QRectF(x - 12, chart.bottom() + 3, bar_width + 24, 24)
+            label_rect = QRectF(x - 18, chart.bottom() + 3, bar_width + 36, 18)
             painter.drawText(label_rect, Qt.AlignHCenter | Qt.AlignTop, label[:10])
             painter.setPen(Qt.NoPen)
 
@@ -617,191 +855,135 @@ class DashboardPage(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         container = QWidget()
+        container.setObjectName("dashboardCanvas")
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(28, 22, 28, 28)
-        layout.setSpacing(16)
+        layout.setContentsMargins(30, 24, 30, 28)
+        layout.setSpacing(18)
 
-        # HERO --------------------------------------------------
+        # ACTIVE DATASET ---------------------------------------
         hero = QFrame()
-        hero.setObjectName("heroCard")
-        hero.setMinimumHeight(215)
+        hero.setObjectName("dashboardHero")
+        hero.setMinimumHeight(186)
 
         hero_layout = QHBoxLayout(hero)
-        hero_layout.setContentsMargins(24, 20, 24, 20)
-        hero_layout.setSpacing(20)
-
-        # --------------------------------------------------
-        # HERO BRAND BLOCK
-        # --------------------------------------------------
-        hero_brand = QHBoxLayout()
-        hero_brand.setSpacing(16)
-
-        hero_logo = QLabel()
-        self.hero_logo = hero_logo
-        hero_logo.setObjectName("heroLogo")
-        hero_logo.setFixedSize(132, 132)
-        hero_logo.setAlignment(Qt.AlignCenter)
-
-        logo_path = _resource_path("assets/logo.jpg")
-        self._hero_logo_pixmap = QPixmap()
-        if logo_path.exists():
-            pixmap = QPixmap(str(logo_path))
-            if not pixmap.isNull():
-                self._hero_logo_pixmap = pixmap
-                hero_logo.setPixmap(
-                    pixmap.scaled(
-                        132,
-                        132,
-                        Qt.KeepAspectRatio,
-                        Qt.SmoothTransformation,
-                    )
-                )
-        else:
-            hero_logo.setText("DR")
+        hero_layout.setContentsMargins(30, 22, 30, 22)
+        hero_layout.setSpacing(24)
 
         hero_text = QVBoxLayout()
         hero_text.setSpacing(7)
+        hero_topline = QHBoxLayout()
+        hero_topline.setSpacing(10)
+        hero_eyebrow = QLabel("ACTIVE DATASET")
+        hero_eyebrow.setObjectName("heroEyebrow")
+        hero_topline.addWidget(hero_eyebrow)
 
-        hero_title = QLabel("Dataset Research")
-        hero_title.setObjectName("heroTitle")
-
-        hero_description = QLabel(
-            "Analyze your dataset, discover ML methods, and find\n"
-            "relevant academic research in one workspace."
-        )
-        hero_description.setObjectName("heroDescription")
-        hero_description.setWordWrap(True)
-
-        start_button = QPushButton("+  Upload Dataset")
-        start_button.setObjectName("heroButton")
-        start_button.setFixedHeight(38)
-        start_button.setMaximumWidth(170)
-        start_button.setCursor(Qt.PointingHandCursor)
-        start_button.clicked.connect(self.main_window.open_upload_page)
-
-        hero_text.addWidget(hero_title)
-        hero_text.addWidget(hero_description)
-        hero_text.addWidget(start_button)
-        hero_text.addStretch()
-
-        hero_brand.addWidget(hero_logo)
-        hero_brand.addLayout(hero_text, 1)
-        hero_layout.addLayout(hero_brand, 1)
-
-        visual = QFrame()
-        self.hero_visual = visual
-        visual.setObjectName("heroVisual")
-        visual.setFixedWidth(270)
-        visual_layout = QVBoxLayout(visual)
-        visual_layout.setContentsMargins(16, 13, 16, 13)
-        visual_layout.setSpacing(4)
-
-        visual_title = QLabel("RESEARCH WORKFLOW")
-        visual_title.setObjectName("heroVisualTitle")
-        visual_layout.addWidget(visual_title)
-
-        for number, title in [
-            ("01", "Dataset"),
-            ("02", "Analysis"),
-            ("03", "ML Intelligence"),
-            ("04", "Academic Research"),
-        ]:
-            row = QHBoxLayout()
-            row.setSpacing(9)
-            number_label = QLabel(number)
-            number_label.setObjectName("heroWorkflowNumber")
-            number_label.setFixedWidth(22)
-            title_label = QLabel(title)
-            title_label.setObjectName("heroWorkflowTitle")
-            row.addWidget(number_label)
-            row.addWidget(title_label)
-            row.addStretch()
-            visual_layout.addLayout(row)
-
-        visual_layout.addStretch()
-        hero_layout.addWidget(visual)
-        layout.addWidget(hero)
-
-        # QUICK ACTIONS -----------------------------------------
-        quick_header = QHBoxLayout()
-        quick_title = QLabel("Quick Actions")
-        quick_title.setObjectName("sectionTitle")
-        quick_description = QLabel("Start your research workflow")
-        quick_description.setObjectName("sectionDescription")
-        quick_header.addWidget(quick_title)
-        quick_header.addSpacing(8)
-        quick_header.addWidget(quick_description)
-        quick_header.addStretch()
-        layout.addLayout(quick_header)
-
-        self.actions_layout = QGridLayout()
-        self.actions_layout.setHorizontalSpacing(12)
-        self.actions_layout.setVerticalSpacing(12)
-        self.quick_action_cards = [QuickActionCard(
-            "↑", "Upload Dataset",
-            "Import a dataset and start a new project.",
-            self.main_window.open_upload_page,
-        ), QuickActionCard(
-            "◇", "Analyze Dataset",
-            "Explore statistics, missing values and outliers.",
-            self.main_window.open_analysis_page,
-        ), QuickActionCard(
-            "✦", "ML Intelligence",
-            "Discover suitable machine learning methods.",
-            self.main_window.open_ml_page,
-        ), QuickActionCard(
-            "◎", "Academic Research",
-            "Find related papers and research opportunities.",
-            self.main_window.open_research_page,
-        )]
-        layout.addLayout(self.actions_layout)
-
-        # CURRENT DATASET ---------------------------------------
-        dataset_header = QHBoxLayout()
-        dataset_title = QLabel("Current Dataset")
-        dataset_title.setObjectName("sectionTitle")
         self.dataset_status_badge = QLabel("NO DATASET")
         self.dataset_status_badge.setObjectName("datasetStatusBadge")
-        dataset_header.addWidget(dataset_title)
-        dataset_header.addStretch()
-        dataset_header.addWidget(self.dataset_status_badge)
-        layout.addLayout(dataset_header)
+        hero_topline.addWidget(self.dataset_status_badge, 0, Qt.AlignVCenter)
+        hero_topline.addStretch()
+        hero_text.addLayout(hero_topline)
 
-        dataset_card = QFrame()
-        dataset_card.setObjectName("currentDatasetCard")
-        dataset_card.setMinimumHeight(92)
-        dataset_layout = QHBoxLayout(dataset_card)
-        dataset_layout.setContentsMargins(18, 14, 18, 14)
-        dataset_layout.setSpacing(16)
-
-        info = QVBoxLayout()
-        info.setSpacing(3)
         self.dataset_name_label = QLabel("No dataset loaded")
         self.dataset_name_label.setObjectName("datasetName")
+        self.dataset_name_label.setWordWrap(True)
+        hero_text.addWidget(self.dataset_name_label)
+
         self.dataset_description_label = QLabel(
             "Upload a dataset to begin your research workflow."
         )
         self.dataset_description_label.setObjectName("datasetDescription")
         self.dataset_description_label.setWordWrap(True)
-        info.addWidget(self.dataset_name_label)
-        info.addWidget(self.dataset_description_label)
-        info.addStretch()
-        dataset_layout.addLayout(info, 1)
+        hero_text.addWidget(self.dataset_description_label)
 
-        stats = QHBoxLayout()
-        stats.setSpacing(8)
+        hero_buttons = QHBoxLayout()
+        hero_buttons.setSpacing(10)
+        self.analysis_button = QPushButton("Run analysis")
+        self.analysis_button.setObjectName("heroPrimaryButton")
+        self.analysis_button.setFixedHeight(38)
+        self.analysis_button.setCursor(Qt.PointingHandCursor)
+        self.analysis_button.clicked.connect(self.main_window.open_analysis_page)
+        self.analysis_button.setEnabled(False)
+        hero_buttons.addWidget(self.analysis_button)
+
+        self.upload_button = QPushButton("Upload new dataset")
+        self.upload_button.setObjectName("heroSecondaryButton")
+        self.upload_button.setFixedHeight(38)
+        self.upload_button.setCursor(Qt.PointingHandCursor)
+        self.upload_button.clicked.connect(self.main_window.open_upload_page)
+        hero_buttons.addWidget(self.upload_button)
+        hero_buttons.addStretch()
+        hero_text.addLayout(hero_buttons)
+        hero_text.addStretch(1)
+        hero_layout.addLayout(hero_text, 1)
+
+        hero_stats = QHBoxLayout()
+        hero_stats.setSpacing(12)
         self.rows_card = StatCard("ROWS", "—", "Records")
-        self.columns_card = StatCard("COLUMNS", "—", "Features")
-        stats.addWidget(self.rows_card)
-        stats.addWidget(self.columns_card)
-        dataset_layout.addLayout(stats)
-        layout.addWidget(dataset_card)
+        self.columns_card = StatCard("FEATURES", "—", "Columns")
+        self.rows_card.setObjectName("heroMetricCard")
+        self.columns_card.setObjectName("heroMetricCard")
+        hero_stats.addWidget(self.rows_card)
+        hero_stats.addWidget(self.columns_card)
+        hero_layout.addLayout(hero_stats)
+        layout.addWidget(hero)
 
+        # WORKFLOW ---------------------------------------------
+        pipeline_header = QHBoxLayout()
+        pipeline_title = QLabel("Research progress")
+        pipeline_title.setObjectName("sectionTitle")
+        self.pipeline_description = QLabel("Follow the steps in your research workflow")
+        self.pipeline_description.setObjectName("sectionDescription")
+        pipeline_header.addWidget(pipeline_title)
+        pipeline_header.addSpacing(8)
+        pipeline_header.addWidget(self.pipeline_description)
+        pipeline_header.addStretch()
+        layout.addLayout(pipeline_header)
+
+        pipeline_card = QFrame()
+        pipeline_card.setObjectName("pipelineCard")
+        pipeline_layout = QHBoxLayout(pipeline_card)
+        pipeline_layout.setContentsMargins(18, 14, 18, 12)
+        pipeline_layout.setSpacing(0)
+        self.pipeline_layout = pipeline_layout
+        self.pipeline_stages = []
+        self.workflow_connectors = []
+        for index, title in enumerate(("Dataset", "Analysis", "ML Intelligence", "Academic Research")):
+            stage = PipelineStage(index + 1, title, "WAITING")
+            self.pipeline_stages.append(stage)
+            pipeline_layout.addWidget(stage, 1)
+            if index < 3:
+                connector = QFrame()
+                connector.setObjectName("workflowConnector")
+                connector.setFrameShape(QFrame.HLine)
+                connector.setFixedHeight(2)
+                connector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                self.workflow_connectors.append(connector)
+                pipeline_layout.addWidget(connector, 1)
+        layout.addWidget(pipeline_card)
+
+        # QUICK ACTIONS -----------------------------------------
+        quick_header = QHBoxLayout()
+        quick_title = QLabel("Get started")
+        quick_title.setObjectName("sectionTitle")
+        quick_header.addWidget(quick_title)
+        quick_header.addStretch()
+        layout.addLayout(quick_header)
+
+        self.actions_layout = QGridLayout()
+        self.actions_layout.setHorizontalSpacing(14)
+        self.actions_layout.setVerticalSpacing(14)
+        self.quick_action_cards = [
+            QuickActionCard(chr(0x2191), "Upload dataset", "Import a dataset and start a new project.", self.main_window.open_upload_page),
+            QuickActionCard(chr(0x25c7), "Analyze dataset", "Review statistics, missing values, and outliers.", self.main_window.open_analysis_page),
+            QuickActionCard(chr(0x2726), "ML Intelligence", "Explore suitable machine learning methods.", self.main_window.open_ml_page),
+            QuickActionCard(chr(0x25ce), "Academic Research", "Find related papers and research opportunities.", self.main_window.open_research_page),
+        ]
+        layout.addLayout(self.actions_layout)
         # RESEARCH SNAPSHOT -------------------------------------
         snapshot_header = QHBoxLayout()
-        snapshot_title = QLabel("Research Snapshot")
+        snapshot_title = QLabel("Research overview")
         snapshot_title.setObjectName("sectionTitle")
-        snapshot_desc = QLabel("Visual summary of your academic research")
+        snapshot_desc = QLabel("A quick view of your academic research results")
         snapshot_desc.setObjectName("sectionDescription")
         snapshot_header.addWidget(snapshot_title)
         snapshot_header.addSpacing(8)
@@ -821,8 +1003,8 @@ class DashboardPage(QWidget):
             "Distribution of academic sources",
         )
         self.metric_chart = MiniBarChart(
-            "Research Metrics",
-            "Relative magnitude of key outputs",
+            "Research metrics",
+            "Relative scale of key outputs",
         )
         self.research_charts = [
             self.publication_chart,
@@ -830,41 +1012,6 @@ class DashboardPage(QWidget):
             self.metric_chart,
         ]
         layout.addLayout(self.chart_layout)
-
-        # PIPELINE ----------------------------------------------
-        pipeline_header = QHBoxLayout()
-        pipeline_title = QLabel("Research Pipeline")
-        pipeline_title.setObjectName("sectionTitle")
-        pipeline_description = QLabel("Track your research progress")
-        pipeline_description.setObjectName("sectionDescription")
-        pipeline_header.addWidget(pipeline_title)
-        pipeline_header.addSpacing(8)
-        pipeline_header.addWidget(pipeline_description)
-        pipeline_header.addStretch()
-        layout.addLayout(pipeline_header)
-
-        pipeline_card = QFrame()
-        pipeline_card.setObjectName("pipelineCard")
-        pipeline_layout = QGridLayout(pipeline_card)
-        pipeline_layout.setContentsMargins(10, 10, 10, 10)
-        pipeline_layout.setHorizontalSpacing(8)
-        pipeline_layout.setVerticalSpacing(8)
-        self.pipeline_layout = pipeline_layout
-
-        pipeline_data = [
-            ("Dataset", "Upload"),
-            ("Analysis", "Waiting"),
-            ("ML Intelligence", "Waiting"),
-            ("Academic Research", "Waiting"),
-            ("Landscape", "V2"),
-            ("Research Gap", "V2"),
-            ("Report", "V2"),
-        ]
-        self.pipeline_stages = []
-        for index, (title, status) in enumerate(pipeline_data):
-            stage = PipelineStage(index + 1, title, status.upper())
-            self.pipeline_stages.append(stage)
-        layout.addWidget(pipeline_card)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -887,28 +1034,13 @@ class DashboardPage(QWidget):
 
     def _apply_responsive_layout(self, width):
         compact = width < 760
-        margins = 14 if compact else 20 if width < 980 else 28
+        margins = 16 if compact else 22 if width < 980 else 30
         self.layout().setContentsMargins(margins, 16, margins, 20)
 
-        self.hero_visual.setVisible(width >= 900)
-        logo_size = 132 if width >= 900 else 88
-        self.hero_logo.setFixedSize(logo_size, logo_size)
-        if not self._hero_logo_pixmap.isNull():
-            self.hero_logo.setPixmap(
-                self._hero_logo_pixmap.scaled(
-                    logo_size,
-                    logo_size,
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-            )
-
-        action_columns = 4 if width >= 1100 else 2 if width >= 640 else 1
-        chart_columns = 3 if width >= 1040 else 2 if width >= 680 else 1
-        pipeline_columns = 4 if width >= 1000 else 3 if width >= 720 else 2
+        action_columns = 4 if width >= 1100 else 2 if width >= 660 else 1
+        chart_columns = 3 if width >= 1080 else 2 if width >= 700 else 1
         self._reflow_grid(self.actions_layout, self.quick_action_cards, action_columns)
         self._reflow_grid(self.chart_layout, self.research_charts, chart_columns)
-        self._reflow_grid(self.pipeline_layout, self.pipeline_stages, pipeline_columns)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -920,14 +1052,15 @@ class DashboardPage(QWidget):
 
         self.dataset_name_label.setText(filename)
         self.dataset_description_label.setText(
-            "Dataset loaded successfully. Run analysis to generate dataset intelligence."
+            "Dataset loaded and ready. Run an analysis to view statistics and data quality insights."
         )
-        self.dataset_status_badge.setText("● DATASET LOADED")
+        self.dataset_status_badge.setText("DATASET LOADED")
         self.dataset_status_badge.setProperty("state", "success")
         style = self.dataset_status_badge.style()
         style.unpolish(self.dataset_status_badge)
         style.polish(self.dataset_status_badge)
         self.dataset_status_badge.update()
+        self.analysis_button.setEnabled(True)
 
         self.rows_card.set_value(f"{len(dataframe):,}")
         self.columns_card.set_value(f"{len(dataframe.columns):,}")
@@ -938,10 +1071,39 @@ class DashboardPage(QWidget):
             self.pipeline_stages[1].set_status("NEXT", "active")
         for stage in self.pipeline_stages[2:4]:
             stage.set_status("WAITING", "waiting")
-        for stage in self.pipeline_stages[4:]:
-            stage.set_status("READY", "future")
+        self._sync_workflow_connectors()
 
         self.update_research_result({})
+
+    def update_workflow_state(self, has_dataset, analysis_done, ml_done, research_done):
+        """Reflect the saved local workflow state in the dashboard pipeline."""
+        states = [
+            ("READY", "success") if has_dataset else ("UPLOAD", "active"),
+            ("READY", "success") if analysis_done else ("NEXT", "active" if has_dataset else "waiting"),
+            ("READY", "success") if ml_done else ("WAITING", "waiting"),
+            ("READY", "success") if research_done else ("WAITING", "waiting"),
+        ]
+        for stage, (status, state) in zip(self.pipeline_stages[:4], states):
+            stage.set_status(status, state)
+        self.analysis_button.setEnabled(bool(has_dataset))
+        if research_done:
+            self.pipeline_description.setText("All main research steps have saved results")
+        elif ml_done:
+            self.pipeline_description.setText("ML results are ready; continue with academic research")
+        elif analysis_done:
+            self.pipeline_description.setText("Analysis is saved; continue with ML Intelligence")
+        elif has_dataset:
+            self.pipeline_description.setText("Dataset is ready; continue with analysis")
+        else:
+            self.pipeline_description.setText("Upload a dataset to begin your research workflow")
+        self._sync_workflow_connectors()
+
+    def _sync_workflow_connectors(self):
+        for index, connector in enumerate(self.workflow_connectors):
+            complete = self.pipeline_stages[index].property("state") == "success"
+            connector.setProperty("state", "complete" if complete else "pending")
+            connector.style().unpolish(connector)
+            connector.style().polish(connector)
 
     def update_research_result(self, result):
         result = result if isinstance(result, dict) else {}
@@ -1013,16 +1175,10 @@ class DashboardPage(QWidget):
         labels = ["Papers", "Keywords", "Gaps", "Top Score"]
         self.metric_chart.set_data(labels, metrics if any(metrics) else [])
 
-        # Pipeline status.
         if papers:
-            if len(self.pipeline_stages) >= 4:
-                self.pipeline_stages[3].set_status("READY", "success")
-            if len(self.pipeline_stages) >= 5:
-                self.pipeline_stages[4].set_status("READY", "success")
-            if len(self.pipeline_stages) >= 6:
-                self.pipeline_stages[5].set_status("READY", "success")
-            if len(self.pipeline_stages) >= 7:
-                self.pipeline_stages[6].set_status("READY", "success")
+            self.pipeline_stages[3].set_status("READY", "success")
+            self.pipeline_description.setText("Academic research results are ready")
+            self._sync_workflow_connectors()
 
     def reset_dataset(self):
         self.dataset_name_label.setText("No dataset loaded")
@@ -1035,15 +1191,16 @@ class DashboardPage(QWidget):
         style.unpolish(self.dataset_status_badge)
         style.polish(self.dataset_status_badge)
         self.dataset_status_badge.update()
+        self.analysis_button.setEnabled(False)
         self.rows_card.set_value("—")
         self.columns_card.set_value("—")
+        self.pipeline_description.setText("Upload a dataset to begin your research workflow")
         for index, stage in enumerate(self.pipeline_stages):
             if index == 0:
                 stage.set_status("UPLOAD", "active")
-            elif index < 4:
-                stage.set_status("WAITING", "waiting")
             else:
-                stage.set_status("V2", "future")
+                stage.set_status("WAITING", "waiting")
+        self._sync_workflow_connectors()
         self.update_research_result({})
 
 class UploadPage(QWidget):
@@ -1067,15 +1224,15 @@ class UploadPage(QWidget):
 
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(35, 26, 35, 26)
-        layout.setSpacing(18)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(16)
 
         # =================================================
         # HEADER
         # =================================================
 
         title = QLabel(
-            "Upload Dataset"
+            "Upload from computer"
         )
 
         title.setObjectName(
@@ -1355,6 +1512,9 @@ class AnalysisPage(QWidget):
         self._visualization_dataframe: pd.DataFrame | None = None
         self._visualization_correlations = None
         self._visualization_missing_values = None
+        self._analysis_thread: QThread | None = None
+        self._analysis_worker: DatasetAnalysisWorker | None = None
+        self._analysis_started_at = 0.0
 
         self.build_ui()
 
@@ -1427,6 +1587,49 @@ class AnalysisPage(QWidget):
         root_layout.addLayout(
             header_layout
         )
+
+        # =================================================
+        # DATASET READINESS SUMMARY
+        # =================================================
+
+        self.readiness_card = QFrame()
+        self.readiness_card.setObjectName("readinessCard")
+        readiness_layout = QVBoxLayout(self.readiness_card)
+        readiness_layout.setContentsMargins(18, 16, 18, 16)
+        readiness_layout.setSpacing(10)
+
+        readiness_header = QHBoxLayout()
+        readiness_title = QLabel("Kesiapan dataset")
+        readiness_title.setObjectName("readinessTitle")
+        readiness_header.addWidget(readiness_title)
+        readiness_header.addStretch()
+        self.readiness_status = QLabel("Belum dianalisis")
+        self.readiness_status.setObjectName("readinessStatus")
+        self.readiness_status.setTextFormat(Qt.PlainText)
+        self.readiness_status.setProperty("state", "waiting")
+        readiness_header.addWidget(self.readiness_status)
+        readiness_layout.addLayout(readiness_header)
+
+        readiness_metrics = QHBoxLayout()
+        readiness_metrics.setSpacing(12)
+        self.readiness_rows = self._readiness_metric("Ukuran dataset")
+        self.readiness_missing = self._readiness_metric("Nilai kosong")
+        self.readiness_target = self._readiness_metric("Kandidat target")
+        readiness_metrics.addWidget(self.readiness_rows[0], 1)
+        readiness_metrics.addWidget(self.readiness_missing[0], 1)
+        readiness_metrics.addWidget(self.readiness_target[0], 1)
+        readiness_layout.addLayout(readiness_metrics)
+
+        self.readiness_recommendation = QLabel(
+            "Jalankan analisis untuk memeriksa kualitas data dan kandidat target."
+        )
+        self.readiness_recommendation.setObjectName("readinessRecommendation")
+        self.readiness_recommendation.setTextFormat(Qt.PlainText)
+        self.readiness_recommendation.setWordWrap(True)
+        readiness_layout.addWidget(self.readiness_recommendation)
+        root_layout.addWidget(self.readiness_card)
+
+        self._update_readiness()
 
         # =================================================
         # DATASET STATUS
@@ -1504,6 +1707,99 @@ class AnalysisPage(QWidget):
 
         self.result_layout.addStretch()
 
+    @staticmethod
+    def _readiness_metric(label):
+        panel = QFrame()
+        panel.setObjectName("readinessMetric")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+        value = QLabel("—")
+        value.setObjectName("readinessMetricValue")
+        value.setTextFormat(Qt.PlainText)
+        value.setWordWrap(True)
+        caption = QLabel(label)
+        caption.setObjectName("readinessMetricLabel")
+        layout.addWidget(value)
+        layout.addWidget(caption)
+        return panel, value
+
+    def _update_readiness(self, result=None, analyzing=False, failed=False):
+        dataframe = getattr(self.main_window, "current_dataset", None)
+        if dataframe is None:
+            state, status = "waiting", "Dataset belum dimuat"
+            rows_value = missing_value = target_value = "—"
+            recommendation = "Unggah dataset untuk melihat ringkasan kesiapan."
+        elif analyzing:
+            state, status = "active", "Analisis berjalan"
+            rows_value = f"{len(dataframe):,} baris · {len(dataframe.columns):,} kolom"
+            missing_value = target_value = "Sedang diperiksa"
+            recommendation = "Ringkasan akan diperbarui setelah analisis selesai."
+        elif failed:
+            state, status = "error", "Analisis gagal"
+            rows_value = f"{len(dataframe):,} baris · {len(dataframe.columns):,} kolom"
+            missing_value = target_value = "Belum tersedia"
+            recommendation = "Periksa pesan error di bawah, lalu jalankan analisis kembali."
+        elif not isinstance(result, dict) or not result:
+            state, status = "waiting", "Belum dianalisis"
+            rows_value = f"{len(dataframe):,} baris · {len(dataframe.columns):,} kolom"
+            missing_value = target_value = "Belum diperiksa"
+            recommendation = "Jalankan analisis untuk memeriksa kualitas data dan kandidat target."
+        else:
+            profile = result.get("profile") or {}
+            rows_value = (
+                f"{int(profile.get('rows', len(dataframe))):,} baris · "
+                f"{int(profile.get('columns', len(dataframe.columns))):,} kolom"
+            )
+            missing_items = result.get("missing_values") or []
+            missing_count = sum(
+                int(item.get("missing_count", 0))
+                for item in missing_items if isinstance(item, dict)
+            )
+            total_cells = max(1, len(dataframe) * len(dataframe.columns))
+            missing_value = f"{missing_count:,} ({missing_count / total_cells:.1%})"
+
+            fingerprint = result.get("fingerprint") or {}
+            representation = fingerprint.get("representation", {}) if isinstance(fingerprint, dict) else {}
+            candidates = representation.get("target_candidates", []) if isinstance(representation, dict) else []
+            target_value = str(candidates[0]) if candidates else "Belum terdeteksi"
+
+            issues = result.get("data_quality") or []
+            def issue_value(issue, key, default=None):
+                if isinstance(issue, dict):
+                    return issue.get(key, default)
+                return getattr(issue, key, default)
+
+            priority = {"critical": 0, "warning": 1, "info": 2}
+            issues = sorted(
+                issues,
+                key=lambda item: priority.get(str(issue_value(item, "severity", "info")).lower(), 3),
+            )
+            actionable = next(
+                (item for item in issues if str(issue_value(item, "severity", "info")).lower() in {"critical", "warning"}),
+                None,
+            )
+            if actionable is not None:
+                severity = str(issue_value(actionable, "severity", "warning")).lower()
+                state = "error" if severity == "critical" else "attention"
+                status = "Perlu perhatian" if severity == "critical" else "Perlu ditinjau"
+                options = issue_value(actionable, "options", []) or []
+                recommendation = str(options[0]) if options else str(issue_value(actionable, "problem", "Tinjau temuan kualitas data."))
+            else:
+                state, status = "success", "Tidak ada temuan prioritas"
+                recommendation = "Dataset dapat ditinjau lebih lanjut; periksa statistik sebelum menentukan metode analisis."
+
+        self.readiness_rows[1].setText(rows_value)
+        self.readiness_missing[1].setText(missing_value)
+        self.readiness_target[1].setText(target_value)
+        self.readiness_recommendation.setText(recommendation)
+        self.readiness_status.setText(status)
+        self.readiness_status.setProperty("state", state)
+        style = self.readiness_status.style()
+        style.unpolish(self.readiness_status)
+        style.polish(self.readiness_status)
+        self.readiness_status.update()
+
     # =====================================================
     # CLEAR
     # =====================================================
@@ -1524,71 +1820,96 @@ class AnalysisPage(QWidget):
     # =====================================================
 
     def run_analysis(self):
-
-        dataframe = (
-            self.main_window.current_dataset
-        )
-
+        dataframe = self.main_window.current_dataset
         if dataframe is None:
-
             self.show_empty_state()
-
+            return
+        if self._analysis_thread is not None:
             return
 
-        self.analyze_button.setEnabled(
-            False
-        )
-
-        self.analyze_button.setText(
-            "Analyzing..."
-        )
-
         try:
-
-            result = (
-                self.main_window.run_dataset_analysis()
-            )
-
-            self.display_results(
-                result
-            )
-
+            self.main_window.prepare_dataset_analysis()
         except Exception as error:
+            self._show_analysis_error(error)
+            return
 
-            self.clear_results()
+        self._analysis_started_at = time.perf_counter()
+        self.analyze_button.setEnabled(False)
+        self.analyze_button.setText("Analyzing...")
+        self._update_readiness(analyzing=True)
+        self._show_loading_state()
 
-            error_label = QLabel(
-                "Analysis failed.\n\n"
-                f"{error}"
-            )
+        analyzers = {
+            "profile": self.main_window.profiler.profile,
+            "statistics": self.main_window.statistics.analyze,
+            "missing_values": self.main_window.missing_analyzer.analyze,
+            "duplicates": self.main_window.duplicate_analyzer.analyze,
+            "outliers": self.main_window.outlier_analyzer.analyze,
+            "correlations": self.main_window.correlation_analyzer.analyze,
+            "fingerprint": self.main_window.fingerprint_analyzer.generate,
+        }
+        self._analysis_thread = QThread(self)
+        self._analysis_worker = DatasetAnalysisWorker(
+            analyzers, self.main_window.quality_diagnoser, dataframe
+        )
+        self._analysis_worker.moveToThread(self._analysis_thread)
+        self._analysis_thread.started.connect(self._analysis_worker.run)
+        self._analysis_worker.finished.connect(self._on_analysis_finished)
+        self._analysis_worker.failed.connect(self._on_analysis_failed)
+        self._analysis_worker.finished.connect(self._analysis_thread.quit)
+        self._analysis_worker.failed.connect(self._analysis_thread.quit)
+        self._analysis_thread.finished.connect(self._analysis_worker.deleteLater)
+        self._analysis_thread.finished.connect(self._cleanup_analysis_worker)
+        self._analysis_thread.start()
 
-            error_label.setObjectName(
-                "errorState"
-            )
+    def _show_loading_state(self):
+        self.clear_results()
+        self.result_layout.addWidget(LoadingCard(
+            "Analisis sedang berjalan",
+            "Menghitung profil, statistik, kualitas data, korelasi, dan fingerprint dataset.",
+            self,
+        ))
+        self.result_layout.addStretch()
 
-            error_label.setWordWrap(
-                True
-            )
+    def _show_analysis_error(self, error):
+        self._update_readiness(failed=True)
+        self.clear_results()
+        label = QLabel(f"Analysis failed.\n\n{error}")
+        label.setObjectName("errorState")
+        label.setWordWrap(True)
+        self.result_layout.addWidget(label)
+        self.result_layout.addStretch()
 
-            self.result_layout.addWidget(
-                error_label
-            )
-
+    def _on_analysis_finished(self, result):
+        duration_ms = int((time.perf_counter() - self._analysis_started_at) * 1000)
+        try:
+            self.main_window.complete_dataset_analysis(result, duration_ms)
+            self.display_results(result)
+        except Exception as error:
+            self.main_window.fail_dataset_analysis(duration_ms)
+            self._show_analysis_error(error)
         finally:
+            self.analyze_button.setEnabled(True)
+            self.analyze_button.setText("Run Analysis")
 
-            self.analyze_button.setEnabled(
-                True
-            )
+    def _on_analysis_failed(self, error):
+        duration_ms = int((time.perf_counter() - self._analysis_started_at) * 1000)
+        self.main_window.fail_dataset_analysis(duration_ms)
+        self._show_analysis_error(error)
+        self.analyze_button.setEnabled(True)
+        self.analyze_button.setText("Run Analysis")
 
-            self.analyze_button.setText(
-                "Run Analysis"
-            )
+    def _cleanup_analysis_worker(self):
+        self._analysis_worker = None
+        self._analysis_thread = None
 
     # =====================================================
     # DISPLAY RESULTS
     # =====================================================
 
     def display_results(self, result):
+
+        self._update_readiness(result)
 
         self.clear_results()
 
@@ -2159,7 +2480,13 @@ class AnalysisPage(QWidget):
             f"{len(dataframe.columns):,} columns"
         )
 
-        self.show_empty_state()
+        result = getattr(self.main_window, "analysis_result", {})
+        if result:
+            self._update_readiness(result)
+            self.display_results(result)
+        else:
+            self._update_readiness()
+            self.show_empty_state()
 
     # =========================================================
     # ANALYSIS SECTIONS
@@ -2373,6 +2700,31 @@ class AnalysisPage(QWidget):
     # ---------------------------------------------------------
 
     def add_cell_data_quality(self, quality_issues):
+        # Workflow data written by older versions may contain serialized issue
+        # strings; newer versions persist structured dataclass dictionaries.
+        if isinstance(quality_issues, (str, dict)):
+            quality_issues = [quality_issues]
+        normalized_issues = []
+        for issue in quality_issues or []:
+            if isinstance(issue, dict):
+                normalized_issues.append(SimpleNamespace(
+                    category=issue.get("category", ""),
+                    title=issue.get("title", "Temuan kualitas data"),
+                    severity=issue.get("severity", "info"),
+                    problem=issue.get("problem", ""),
+                    magnitude=issue.get("magnitude", ""),
+                    impact=issue.get("impact", ""),
+                    options=issue.get("options") or [],
+                ))
+            elif isinstance(issue, str):
+                normalized_issues.append(SimpleNamespace(
+                    category="legacy", title="Temuan kualitas data tersimpan",
+                    severity="info", problem=issue, magnitude="", impact="", options=[],
+                ))
+            else:
+                normalized_issues.append(issue)
+        quality_issues = normalized_issues
+
         has_crit = any(i.severity == "critical" for i in quality_issues)
         has_warn = any(i.severity == "warning" for i in quality_issues)
         b_text = "Isu Kritis" if has_crit else ("Peringatan Kualitas" if has_warn else "Data Bersih")
@@ -3900,6 +4252,8 @@ class MLIntelligencePage(QWidget):
             recommender=self.recommender,
             task_detector=self.detector,
         )
+        self._ml_thread: QThread | None = None
+        self._ml_worker: MLTrainingWorker | None = None
 
         self.last_task_result = {}
         self.last_method_result = {}
@@ -3977,7 +4331,7 @@ class MLIntelligencePage(QWidget):
         header.addStretch()
 
         self.refresh_button = QPushButton(
-            "Analyze ML"
+            "Run ML"
         )
 
         self.refresh_button.setObjectName(
@@ -4042,6 +4396,11 @@ class MLIntelligencePage(QWidget):
     # ======================================================
 
     def show_empty_state(self):
+
+        self.last_task_result = {}
+        self.last_method_result = {}
+        self.last_intelligence_result = {}
+        self.refresh_button.setText("Run ML")
 
         self.clear_content()
 
@@ -4115,114 +4474,96 @@ class MLIntelligencePage(QWidget):
     # ======================================================
 
     def run_detection(self):
-
-        analysis_result = getattr(
-            self.main_window,
-            "analysis_result",
-            {},
-        )
-
-        if not analysis_result:
-
-            self.show_empty_state()
-
+        if self._ml_thread is not None:
             return
-
-        fingerprint = analysis_result.get(
-            "fingerprint"
-        )
-
-        dataframe = getattr(
-            self.main_window,
-            "current_dataset",
-            None,
-        )
-
+        analysis_result = getattr(self.main_window, "analysis_result", {})
+        fingerprint = analysis_result.get("fingerprint") if analysis_result else None
+        dataframe = getattr(self.main_window, "current_dataset", None)
         if not fingerprint or dataframe is None:
-
             self.show_empty_state()
-
             return
 
         self.refresh_button.setEnabled(False)
-        self.refresh_button.setText("Analyzing...")
+        self.refresh_button.setText("Training models...")
+        self.clear_content()
+        self.content_layout.addWidget(LoadingCard(
+            "Training and comparing models",
+            "Running the full configured model training and validation. This may take a while.",
+            self.content,
+        ))
+        self.content_layout.addStretch()
 
+        self._ml_thread = QThread(self)
+        self._ml_worker = MLTrainingWorker(self.intelligence_engine, dataframe, fingerprint)
+        self._ml_worker.moveToThread(self._ml_thread)
+        self._ml_thread.started.connect(self._ml_worker.run)
+        self._ml_worker.finished.connect(self._on_ml_finished)
+        self._ml_worker.failed.connect(self._on_ml_failed)
+        self._ml_worker.finished.connect(self._ml_thread.quit)
+        self._ml_worker.failed.connect(self._ml_thread.quit)
+        self._ml_thread.finished.connect(self._ml_worker.deleteLater)
+        self._ml_thread.finished.connect(self._cleanup_ml_worker)
+        self._ml_thread.start()
+
+    def _on_ml_finished(self, intelligence_result):
         try:
+            self._process_ml_result(intelligence_result)
+        except Exception as error:
+            self.show_error(f"Gagal menampilkan hasil ML Intelligence:\n{error}")
+            self._finish_ml_run()
 
-            # ------------------------------------------------
-            # EMPIRICAL ML INTELLIGENCE
-            # ------------------------------------------------
-            # Task detection is still based on dataset structure, but the
-            # final method ranking now comes from real model evaluation.
-            intelligence_result = self.intelligence_engine.analyze(
-                dataframe=dataframe,
-                fingerprint=fingerprint,
-                evaluate_models=True,
-            )
-
-            self.last_intelligence_result = intelligence_result
-
-            if intelligence_result.get("status") == "ERROR":
-                self.show_error(
-                    "Gagal melakukan ML Intelligence:\n"
-                    f"{intelligence_result.get('message', 'Unknown error')}"
-                )
-                return
-
-            # Keep the existing display contract intact. The appearance of
-            # the page does not change; only the data feeding the cards does.
-            task_result = intelligence_result.get(
-                "task_detection",
-                {},
-            )
-
-            result = dict(task_result)
-            result["dataset"] = intelligence_result.get(
-                "dataset",
-                self.extract_dataset_info(
-                    analysis_result,
-                    fingerprint,
-                ),
-            )
-
-            evaluation = intelligence_result.get(
-                "evaluation",
-                {},
-            )
-
-            if evaluation.get("message"):
-                result["message"] = evaluation.get("message")
-
-            self.last_task_result = result
-
-            method_result = intelligence_result.get(
-                "recommendation",
-                {
-                    "recommendations": [],
-                    "recommendation_count": 0,
-                },
-            )
-
-            self.last_method_result = method_result
-
-            # ------------------------------------------------
-            # DISPLAY
-            # ------------------------------------------------
-            self.display_result(
-                result,
-                method_result,
-            )
-
-        except Exception as exc:
-
+    def _process_ml_result(self, intelligence_result):
+        self.last_intelligence_result = intelligence_result
+        if intelligence_result.get("status") == "ERROR":
             self.show_error(
                 "Gagal melakukan ML Intelligence:\n"
-                f"{exc}"
+                f"{intelligence_result.get('message', 'Unknown error')}"
             )
+            self._finish_ml_run()
+            return
 
-        finally:
-            self.refresh_button.setEnabled(True)
-            self.refresh_button.setText("Analyze ML")
+        analysis_result = getattr(self.main_window, "analysis_result", {})
+        fingerprint = analysis_result.get("fingerprint", {})
+        task_result = dict(intelligence_result.get("task_detection", {}))
+        task_result["dataset"] = intelligence_result.get(
+            "dataset", self.extract_dataset_info(analysis_result, fingerprint)
+        )
+        evaluation = intelligence_result.get("evaluation", {})
+        if evaluation.get("message"):
+            task_result["message"] = evaluation["message"]
+        method_result = intelligence_result.get(
+            "recommendation", {"recommendations": [], "recommendation_count": 0}
+        )
+        self.last_task_result = task_result
+        self.last_method_result = method_result
+        self.display_result(task_result, method_result)
+
+        project_id = getattr(self.main_window, "current_project_id", None)
+        if project_id is not None:
+            try:
+                self.main_window.repository.save_workflow_section(project_id, "ml_task", task_result)
+                saved_methods = dict(method_result)
+                saved_methods["_intelligence_result"] = intelligence_result
+                self.main_window.repository.save_workflow_section(project_id, "ml_methods", saved_methods)
+            except Exception as error:
+                print(f"Warning: ML workflow could not be saved: {error}")
+        self.main_window.dashboard.update_workflow_state(
+            has_dataset=True, analysis_done=True, ml_done=True,
+            research_done=bool(getattr(self.main_window.research_page, "last_result", None)),
+        )
+        self._finish_ml_run()
+
+    def _on_ml_failed(self, error):
+        self.show_error(f"Gagal melakukan ML Intelligence:\n{error}")
+        self._finish_ml_run()
+
+    def _finish_ml_run(self):
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText("Run ML again" if self.last_task_result else "Run ML")
+
+    def _cleanup_ml_worker(self):
+        self._ml_worker = None
+        self._ml_thread = None
 
     # ======================================================
     # DATASET INFORMATION
@@ -4878,18 +5219,59 @@ class MLIntelligencePage(QWidget):
     # ======================================================
 
     def update_dataset(self):
-
-        if getattr(
-            self.main_window,
-            "analysis_result",
-            {},
-        ):
-
-            self.run_detection()
-
+        if self.last_task_result and self.last_method_result:
+            return
+        if getattr(self.main_window, "analysis_result", {}):
+            self.show_ready_state()
         else:
-
             self.show_empty_state()
+
+    def restore_saved_result(self) -> bool:
+        """Restore completed ML output for the active local dataset project."""
+        project_id = getattr(self.main_window, "current_project_id", None)
+        if project_id is None:
+            return False
+        try:
+            state = self.main_window.repository.get_workflow_state(project_id) or {}
+        except Exception as error:
+            print(f"Warning: saved ML workflow could not be loaded: {error}")
+            return False
+
+        task_result = state.get("ml_task") or {}
+        saved_methods = state.get("ml_methods") or {}
+        if not task_result or not saved_methods:
+            return False
+        self.last_task_result = task_result
+        self.last_method_result = {
+            key: value for key, value in saved_methods.items()
+            if key != "_intelligence_result"
+        }
+        self.last_intelligence_result = saved_methods.get("_intelligence_result") or {}
+        self.display_result(self.last_task_result, self.last_method_result)
+        self.refresh_button.setText("Run ML again")
+        return True
+
+    def show_ready_state(self):
+        self.clear_content()
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(30, 40, 30, 40)
+        layout.setSpacing(10)
+        title = QLabel("Dataset analysis is ready")
+        title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignCenter)
+        description = QLabel(
+            "Tekan Run ML untuk melatih dan membandingkan seluruh metode "
+            "yang dikonfigurasi. Proses dapat memerlukan waktu."
+        )
+        description.setObjectName("cardDescription")
+        description.setAlignment(Qt.AlignCenter)
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
+        self.content_layout.addWidget(card)
+        self.content_layout.addStretch()
 
     # ======================================================
     # CLEAR CONTENT
@@ -4946,7 +5328,6 @@ class ResearchPage(QWidget):
 
     Menampilkan:
     - Research Overview
-    - Search Queries
     - Ranked Papers
     - Dataset Usage Confidence
     - Research Landscape
@@ -4963,6 +5344,8 @@ class ResearchPage(QWidget):
         self.task_detector = MLTaskDetector()
 
         self.research_result: Dict[str, Any] = {}
+        self._research_thread: QThread | None = None
+        self._research_worker: AcademicResearchWorker | None = None
 
         self._build_ui()
 
@@ -5108,9 +5491,14 @@ class ResearchPage(QWidget):
             False
         )
 
-        root.addWidget(
-            self.progress
+        root.addWidget(self.progress)
+        self.loading_card = LoadingCard(
+            "Academic research is running",
+            "Searching literature and preparing the research overview, papers, landscape, and potential gaps.",
+            self,
         )
+        self.loading_card.setVisible(False)
+        root.addWidget(self.loading_card)
 
         # -----------------------------------------------------
         # TABS
@@ -5124,10 +5512,6 @@ class ResearchPage(QWidget):
 
         self.overview_tab = (
             self._create_overview_tab()
-        )
-
-        self.queries_tab = (
-            self._create_queries_tab()
         )
 
         self.papers_tab = (
@@ -5149,11 +5533,6 @@ class ResearchPage(QWidget):
         self.tabs.addTab(
             self.overview_tab,
             "Overview",
-        )
-
-        self.tabs.addTab(
-            self.queries_tab,
-            "Search Queries",
         )
 
         self.tabs.addTab(
@@ -5387,48 +5766,6 @@ class ResearchPage(QWidget):
 
     # ---------------------------------------------------------
 
-    def _create_queries_tab(self):
-
-        widget = QWidget()
-
-        layout = QVBoxLayout(
-            widget
-        )
-
-        title = QLabel(
-            "Generated Academic Search Queries"
-        )
-
-        title.setObjectName(
-            "sectionTitle"
-        )
-
-        description = QLabel(
-            "Queries generated from the detected dataset "
-            "keywords, research domain, and ML task."
-        )
-
-        description.setWordWrap(
-            True
-        )
-
-        self.query_list = QListWidget()
-
-        layout.addWidget(
-            title
-        )
-
-        layout.addWidget(
-            description
-        )
-
-        layout.addWidget(
-            self.query_list,
-            1,
-        )
-
-        return widget
-
     # ---------------------------------------------------------
 
     def _create_papers_tab(self):
@@ -5530,11 +5867,10 @@ class ResearchPage(QWidget):
             self._show_selected_paper
         )
 
-        self.paper_detail = QTextEdit()
-
-        self.paper_detail.setReadOnly(
-            True
-        )
+        self.paper_detail = QTextBrowser()
+        self.paper_detail.setOpenExternalLinks(True)
+        self.paper_detail.setReadOnly(True)
+        self.paper_detail.setMinimumHeight(220)
 
         self.paper_detail.setMaximumHeight(
             190
@@ -5562,71 +5898,89 @@ class ResearchPage(QWidget):
     # ---------------------------------------------------------
 
     def _create_landscape_tab(self):
-
         widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(14)
 
-        layout = QVBoxLayout(
-            widget
+        title = QLabel("Research Landscape")
+        title.setObjectName("sectionTitle")
+        description = QLabel(
+            "Distribution of publication sources, methods, and venues in the papers found."
         )
+        description.setObjectName("cardDescription")
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
 
-        title = QLabel(
-            "Research Landscape"
-        )
+        metrics = QHBoxLayout()
+        self.landscape_papers_metric = self._create_metric_card("Papers analyzed", "0")
+        self.landscape_methods_metric = self._create_metric_card("Methods identified", "0")
+        self.landscape_venues_metric = self._create_metric_card("Publication venues", "0")
+        self.landscape_latest_metric = self._create_metric_card("Latest year", "-")
+        for card in (self.landscape_papers_metric, self.landscape_methods_metric,
+                     self.landscape_venues_metric, self.landscape_latest_metric):
+            metrics.addWidget(card)
+        layout.addLayout(metrics)
 
-        title.setObjectName(
-            "sectionTitle"
-        )
+        chart_card = QFrame()
+        chart_card.setObjectName("researchCard")
+        chart_layout = QVBoxLayout(chart_card)
+        chart_layout.setContentsMargins(12, 10, 12, 10)
+        self.landscape_figure = Figure(figsize=(11, 3.6), tight_layout=True)
+        self.landscape_axes = self.landscape_figure.subplots(1, 3)
+        self.landscape_canvas = FigureCanvasQTAgg(self.landscape_figure)
+        chart_layout.addWidget(self.landscape_canvas)
+        layout.addWidget(chart_card, 1)
 
         self.landscape_text = QTextEdit()
-
-        self.landscape_text.setReadOnly(
-            True
-        )
-
-        layout.addWidget(
-            title
-        )
-
-        layout.addWidget(
-            self.landscape_text,
-            1,
-        )
-
+        self.landscape_text.setReadOnly(True)
+        self.landscape_text.setMaximumHeight(150)
+        layout.addWidget(self.landscape_text)
         return widget
 
     # ---------------------------------------------------------
 
     def _create_trend_tab(self):
-
         widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(14)
 
-        layout = QVBoxLayout(
-            widget
+        title = QLabel("Publication Trend")
+        title.setObjectName("sectionTitle")
+        description = QLabel(
+            "Annual publication counts for the papers returned by this literature search."
         )
+        description.setObjectName("cardDescription")
+        description.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(description)
 
-        title = QLabel(
-            "Research Trend"
-        )
+        metrics = QHBoxLayout()
+        self.trend_years_metric = self._create_metric_card("Years represented", "0")
+        self.trend_peak_metric = self._create_metric_card("Peak publication year", "-")
+        self.trend_direction_metric = self._create_metric_card("Recent direction", "-")
+        self.trend_growth_metric = self._create_metric_card("Endpoint change", "-")
+        for card in (self.trend_years_metric, self.trend_peak_metric,
+                     self.trend_direction_metric, self.trend_growth_metric):
+            metrics.addWidget(card)
+        layout.addLayout(metrics)
 
-        title.setObjectName(
-            "sectionTitle"
-        )
+        chart_card = QFrame()
+        chart_card.setObjectName("researchCard")
+        chart_layout = QVBoxLayout(chart_card)
+        chart_layout.setContentsMargins(12, 10, 12, 10)
+        self.trend_figure = Figure(figsize=(10, 3.8), tight_layout=True)
+        self.trend_axes = self.trend_figure.subplots()
+        self.trend_canvas = FigureCanvasQTAgg(self.trend_figure)
+        chart_layout.addWidget(self.trend_canvas)
+        layout.addWidget(chart_card, 1)
 
         self.trend_text = QTextEdit()
-
-        self.trend_text.setReadOnly(
-            True
-        )
-
-        layout.addWidget(
-            title
-        )
-
-        layout.addWidget(
-            self.trend_text,
-            1,
-        )
-
+        self.trend_text.setReadOnly(True)
+        self.trend_text.setMaximumHeight(115)
+        layout.addWidget(self.trend_text)
         return widget
 
     # ---------------------------------------------------------
@@ -5657,24 +6011,19 @@ class ResearchPage(QWidget):
             True
         )
 
-        self.gap_text = QTextEdit()
-
-        self.gap_text.setReadOnly(
-            True
-        )
+        self.gap_summary_label = QLabel("Potential directions: 0")
+        self.gap_summary_label.setObjectName("statusLabel")
+        self.gap_text = QTextBrowser()
+        self.gap_text.setOpenExternalLinks(True)
+        self.gap_text.setReadOnly(True)
 
         layout.addWidget(
             title
         )
 
-        layout.addWidget(
-            description
-        )
-
-        layout.addWidget(
-            self.gap_text,
-            1,
-        )
+        layout.addWidget(description)
+        layout.addWidget(self.gap_summary_label)
+        layout.addWidget(self.gap_text, 1)
 
         return widget
 
@@ -5810,8 +6159,6 @@ class ResearchPage(QWidget):
             ""
         )
 
-        self.query_list.clear()
-
         self.paper_table.setRowCount(
             0
         )
@@ -5823,152 +6170,129 @@ class ResearchPage(QWidget):
         self.trend_text.clear()
 
         self.gap_text.clear()
+        self.gap_summary_label.setText("Potential directions: 0")
+        for card in (self.landscape_papers_metric, self.landscape_methods_metric,
+                     self.landscape_venues_metric, self.landscape_latest_metric):
+            self._set_metric(card, "-")
+        for card in (self.trend_years_metric, self.trend_peak_metric,
+                     self.trend_direction_metric, self.trend_growth_metric):
+            self._set_metric(card, "-")
+        for axis in self.landscape_axes:
+            axis.clear()
+            axis.set_axis_off()
+        self.landscape_canvas.draw_idle()
+        self.trend_axes.clear()
+        self.trend_axes.set_axis_off()
+        self.trend_canvas.draw_idle()
+        self.loading_card.setVisible(False)
 
         if hasattr(self.main_window, "papers_tool_page"):
             self.main_window.papers_tool_page.show_empty_state()
+
+    def restore_result(self, result: dict[str, Any]) -> None:
+        """Rebuild the research page from a result stored in the local project DB."""
+        if not isinstance(result, dict) or not result:
+            self.show_empty_state()
+            return
+        dataframe = getattr(self.main_window, "current_dataset", None)
+        analysis_result = getattr(self.main_window, "analysis_result", {})
+        fingerprint = analysis_result.get("fingerprint", {})
+        if dataframe is None or not fingerprint:
+            self.show_empty_state()
+            return
+        ml_result = self._build_ml_result(dataframe, fingerprint)
+        self.research_result = result
+        self._update_status(dataframe, analysis_result)
+        self._populate_result(result, ml_result)
 
     # =========================================================
     # RUN RESEARCH
     # =========================================================
 
     def run_research(self):
-
-        dataframe = (
-            self.main_window.current_dataset
-        )
-
-        analysis_result = (
-            self.main_window.analysis_result
-        )
-
+        dataframe = self.main_window.current_dataset
+        analysis_result = self.main_window.analysis_result
         if dataframe is None:
-
-            QMessageBox.warning(
-                self,
-                "Dataset Required",
-                "Load a dataset before running academic research.",
-            )
-
+            QMessageBox.warning(self, "Dataset Required", "Load a dataset before running academic research.")
             return
-
         if not analysis_result:
-
-            QMessageBox.warning(
-                self,
-                "Analysis Required",
-                "Run Dataset Analysis first before starting Academic Research.",
-            )
-
+            QMessageBox.warning(self, "Analysis Required", "Run Dataset Analysis first before starting Academic Research.")
             return
-
-        fingerprint = (
-            analysis_result.get(
-                "fingerprint"
-            )
-        )
-
+        fingerprint = analysis_result.get("fingerprint")
         if not fingerprint:
-
-            QMessageBox.warning(
-                self,
-                "Fingerprint Required",
-                "Dataset fingerprint is not available. "
-                "Run Dataset Analysis again.",
-            )
-
+            QMessageBox.warning(self, "Fingerprint Required", "Dataset fingerprint is not available. Run Dataset Analysis again.")
+            return
+        if self._research_thread is not None:
             return
 
-        self.run_button.setEnabled(
-            False
+        self.run_button.setEnabled(False)
+        self.run_button.setText("Researching...")
+        self.progress.setVisible(True)
+        self.loading_card.setVisible(True)
+        self._research_thread = QThread(self)
+        self._research_worker = AcademicResearchWorker(
+            self.engine, self.task_detector, dataframe, fingerprint
         )
+        self._research_worker.moveToThread(self._research_thread)
+        self._research_thread.started.connect(self._research_worker.run)
+        self._research_worker.finished.connect(self._on_research_finished)
+        self._research_worker.failed.connect(self._on_research_failed)
+        self._research_worker.finished.connect(self._research_thread.quit)
+        self._research_worker.failed.connect(self._research_thread.quit)
+        self._research_thread.finished.connect(self._research_worker.deleteLater)
+        self._research_thread.finished.connect(self._cleanup_research_worker)
+        self._research_thread.start()
 
-        self.progress.setVisible(
-            True
-        )
-
-        self.run_button.setText(
-            "Researching..."
-        )
-
+    def _on_research_finished(self, result, ml_result):
         try:
-
-            ml_result = (
-                self._build_ml_result(
-                    dataframe,
-                    fingerprint,
-                )
-            )
-
-            result = (
-                self.engine.analyze(
-                    dataframe=dataframe,
-                    fingerprint=fingerprint,
-                    ml_result=ml_result,
-                    search_limit=20,
-                    max_queries=5,
-                )
-            )
-
-            if result.get(
-                "status"
-            ) != "SUCCESS":
-
-                error = result.get(
-                    "error",
-                    "Unknown research error.",
-                )
-
-                QMessageBox.critical(
-                    self,
-                    "Research Error",
-                    str(error),
-                )
-
+            if result.get("status") not in {"SUCCESS", "PARTIAL"}:
+                QMessageBox.critical(self, "Research Error", str(result.get("error", "Unknown research error.")))
                 return
-
             self.research_result = result
-
+            if result.get("status") == "PARTIAL":
+                QMessageBox.warning(
+                    self, "Academic Research Parsial",
+                    "Tahap Academic Research sudah dijalankan, tetapi belum menemukan paper yang dapat dianalisis. "
+                    "Hasil yang tersedia tetap disimpan dan dapat dimasukkan ke laporan.",
+                )
+            project_id = getattr(self.main_window, "current_project_id", None)
+            if project_id is not None:
+                try:
+                    self.main_window.repository.save_workflow_section(project_id, "research", result)
+                    self.main_window.repository.save_research_result(project_id, result)
+                except Exception as error:
+                    print(f"Warning: research workflow could not be saved: {error}")
             self.main_window.dashboard.update_research_result(result)
-
-            self.main_window.papers_tool_page.update_from_result(
-                result
+            self.main_window.dashboard.update_workflow_state(
+                has_dataset=True,
+                analysis_done=bool(self.main_window.analysis_result),
+                ml_done=bool(self.main_window.ml_page.last_task_result and self.main_window.ml_page.last_method_result),
+                research_done=True,
             )
-
-            self._update_status(
-                dataframe,
-                analysis_result,
-            )
-
-            self._populate_result(
-                result,
-                ml_result,
-            )
-
-            self.tabs.setCurrentWidget(
-                self.overview_tab
-            )
-
-        except Exception as exc:
-
-            QMessageBox.critical(
-                self,
-                "Academic Research Error",
-                str(exc),
-            )
-
+            self.main_window.papers_tool_page.update_from_result(result)
+            self.main_window.landscape_tool_page.update_from_result(result)
+            self.main_window.gap_tool_page.update_from_result(result)
+            self._update_status(self.main_window.current_dataset, self.main_window.analysis_result)
+            self._populate_result(result, ml_result)
+            self.tabs.setCurrentWidget(self.overview_tab)
+        except Exception as error:
+            QMessageBox.critical(self, "Academic Research Error", str(error))
         finally:
+            self._finish_research()
 
-            self.progress.setVisible(
-                False
-            )
+    def _on_research_failed(self, error):
+        QMessageBox.critical(self, "Academic Research Error", str(error))
+        self._finish_research()
 
-            self.run_button.setEnabled(
-                True
-            )
+    def _finish_research(self):
+        self.progress.setVisible(False)
+        self.loading_card.setVisible(False)
+        self.run_button.setEnabled(True)
+        self.run_button.setText("Run Academic Research")
 
-            self.run_button.setText(
-                "Run Academic Research"
-            )
+    def _cleanup_research_worker(self):
+        self._research_worker = None
+        self._research_thread = None
 
     # =========================================================
     # ML RESULT
@@ -6084,11 +6408,6 @@ class ResearchPage(QWidget):
         domain_result = result.get(
             "domain",
             {}
-        )
-
-        queries = result.get(
-            "queries",
-            []
         )
 
         # -----------------------------------------------------
@@ -6301,28 +6620,6 @@ class ResearchPage(QWidget):
             )
 
         # -----------------------------------------------------
-        # QUERIES
-        # -----------------------------------------------------
-
-        self.query_list.clear()
-
-        for query in queries:
-
-            item = QListWidgetItem(
-                str(query)
-            )
-
-            self.query_list.addItem(
-                item
-            )
-
-        if not queries:
-
-            self.query_list.addItem(
-                "No search queries generated."
-            )
-
-        # -----------------------------------------------------
         # PAPERS
         # -----------------------------------------------------
 
@@ -6334,36 +6631,165 @@ class ResearchPage(QWidget):
         # LANDSCAPE
         # -----------------------------------------------------
 
+        landscape = landscape if isinstance(landscape, dict) else {}
+        landscape_summary = landscape.get("summary") or {}
+        years = landscape.get("publication_years") or {}
+        self._set_metric(self.landscape_papers_metric, str(landscape.get("paper_count", len(papers))))
+        self._set_metric(self.landscape_methods_metric, str(len(landscape.get("methods") or [])))
+        self._set_metric(self.landscape_venues_metric, str(len(landscape.get("top_venues") or [])))
+        self._set_metric(
+            self.landscape_latest_metric,
+            str(landscape_summary.get("latest_publication_year") or (max(years, key=str) if years else "-")),
+        )
+        self._render_landscape_chart(landscape)
+        top_source = (landscape.get("sources") or [{}])[0]
+        top_method = (landscape.get("methods") or [{}])[0]
+        top_venue = (landscape.get("top_venues") or [{}])[0]
         self.landscape_text.setPlainText(
-            self._format_section(
-                landscape
-            )
+            "Landscape summary\n"
+            f"Papers analyzed: {landscape.get('paper_count', len(papers))}\n"
+            f"Latest publication: {landscape_summary.get('latest_publication_year') or '-'}\n"
+            f"Most represented source: {top_source.get('name', '-')} ({top_source.get('percentage', 0)}%)\n"
+            f"Most identified method: {top_method.get('name', '-')} ({top_method.get('percentage', 0)}%)\n"
+            f"Leading venue: {top_venue.get('name', '-')} ({top_venue.get('percentage', 0)}%)"
         )
 
         # -----------------------------------------------------
         # TREND
         # -----------------------------------------------------
 
+        trend = trend if isinstance(trend, dict) else {}
+        trend_rows = trend.get("publication_trend") or landscape.get("research_activity") or []
+        growth = trend.get("growth") if isinstance(trend.get("growth"), dict) else {}
+        self._set_metric(self.trend_years_metric, str(len(trend_rows)))
+        self._set_metric(self.trend_peak_metric, str(trend.get("peak_year") or "-"))
+        self._set_metric(self.trend_direction_metric, str(trend.get("recent_direction") or "-"))
+        growth_pct = growth.get("percentage")
+        self._set_metric(self.trend_growth_metric, f"{growth_pct:+g}%" if isinstance(growth_pct, (int, float)) else "Insufficient data")
+        self._render_trend_chart(trend, landscape)
+        year_range = trend.get("year_range") if isinstance(trend.get("year_range"), dict) else {}
         self.trend_text.setPlainText(
-            self._format_section(
-                trend
-            )
+            "Trend summary\n"
+            f"Recent direction: {trend.get('recent_direction', 'UNKNOWN')}\n"
+            f"Peak year: {trend.get('peak_year') or '-'} ({trend.get('peak_paper_count', 0)} papers)\n"
+            f"Year range: {year_range.get('start', '-')} to {year_range.get('end', '-')}\n"
+            f"Endpoint change: {growth_pct:+g}%" if isinstance(growth_pct, (int, float)) else
+            "Trend summary\n"
+            f"Recent direction: {trend.get('recent_direction', 'UNKNOWN')}\n"
+            f"Peak year: {trend.get('peak_year') or '-'} ({trend.get('peak_paper_count', 0)} papers)\n"
+            f"Year range: {year_range.get('start', '-')} to {year_range.get('end', '-')}\n"
+            "Endpoint change: insufficient data"
         )
 
         # -----------------------------------------------------
         # GAP
         # -----------------------------------------------------
 
-        gaps = result.get(
-            "gaps",
-            {}
-        )
+        gaps = result.get("gaps", {})
+        gap_items = []
+        if isinstance(gaps, dict):
+            gap_items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        elif isinstance(gaps, list):
+            gap_items = gaps
+        self.gap_summary_label.setText(f"Potential directions: {len(gap_items)}")
+        self.gap_text.setHtml(self._format_gap_html(gaps))
 
-        self.gap_text.setPlainText(
-            self._format_gap(
-                gaps
+    def _render_landscape_chart(self, landscape):
+        groups = [
+            ("Sources", landscape.get("sources") or []),
+            ("Methods", landscape.get("methods") or []),
+            ("Venues", landscape.get("top_venues") or []),
+        ]
+        for axis, (title, entries) in zip(self.landscape_axes, groups):
+            axis.clear()
+            entries = [item for item in entries if isinstance(item, dict) and item.get("name")]
+            entries = entries[:6]
+            axis.set_title(title, loc="left", fontsize=10, fontweight="bold", color="#20324A")
+            if not entries:
+                axis.text(0.5, 0.5, "No data available", ha="center", va="center", color="#718096", transform=axis.transAxes)
+                axis.set_axis_off()
+                continue
+            axis.set_axis_on()
+            names = [str(item["name"]) for item in reversed(entries)]
+            percentages = [float(item.get("percentage", 0) or 0) for item in reversed(entries)]
+            bars = axis.barh(names, percentages, color="#4F8CFF", height=0.62)
+            axis.set_xlim(0, max(100, max(percentages, default=0) * 1.16))
+            axis.set_xlabel("Share of analyzed papers (%)", fontsize=8, color="#64748B")
+            axis.tick_params(axis="both", labelsize=8, colors="#64748B")
+            for spine in ("top", "right", "left"):
+                axis.spines[spine].set_visible(False)
+            axis.grid(axis="x", color="#E8EEF6", linewidth=0.7)
+            axis.set_axisbelow(True)
+            for bar, value in zip(bars, percentages):
+                axis.text(value + 0.8, bar.get_y() + bar.get_height() / 2, f"{value:g}%", va="center", fontsize=8, color="#344158")
+        self.landscape_figure.tight_layout()
+        self.landscape_canvas.draw_idle()
+
+    def _render_trend_chart(self, trend, landscape):
+        axis = self.trend_axes
+        axis.clear()
+        rows = trend.get("publication_trend") or landscape.get("research_activity") or []
+        if not rows and isinstance(landscape.get("publication_years"), dict):
+            rows = [{"year": year, "paper_count": count} for year, count in landscape["publication_years"].items()]
+        rows = [row for row in rows if isinstance(row, dict) and row.get("year") is not None]
+        rows.sort(key=lambda row: int(row["year"]))
+        axis.set_title("Papers by publication year", loc="left", fontsize=10, fontweight="bold", color="#20324A")
+        if not rows:
+            axis.text(0.5, 0.5, "No publication year data available", ha="center", va="center", color="#718096", transform=axis.transAxes)
+            axis.set_axis_off()
+        else:
+            axis.set_axis_on()
+            years = [str(row["year"]) for row in rows]
+            counts = [int(row.get("paper_count", 0) or 0) for row in rows]
+            bars = axis.bar(years, counts, color="#4F8CFF", width=0.72)
+            axis.set_ylabel("Papers", fontsize=8, color="#64748B")
+            axis.set_xlabel("Publication year", fontsize=8, color="#64748B")
+            axis.tick_params(axis="both", labelsize=8, colors="#64748B")
+            for spine in ("top", "right", "left"):
+                axis.spines[spine].set_visible(False)
+            axis.grid(axis="y", color="#E8EEF6", linewidth=0.7)
+            axis.set_axisbelow(True)
+            for bar, count in zip(bars, counts):
+                axis.text(bar.get_x() + bar.get_width() / 2, count, str(count), ha="center", va="bottom", fontsize=8, color="#344158")
+        self.trend_figure.tight_layout()
+        self.trend_canvas.draw_idle()
+
+    @staticmethod
+    def _format_gap_html(gaps):
+        if not isinstance(gaps, dict):
+            gaps = {"gaps": gaps if isinstance(gaps, list) else []}
+        items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        if not isinstance(items, list):
+            items = []
+        cards = []
+        for index, item in enumerate(items, 1):
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("gap") or item.get("description") or "Potential research direction"
+                description = item.get("description") or item.get("rationale") or item.get("problem") or ""
+                evidence = item.get("evidence")
+                details = []
+                if description and description != title:
+                    details.append(f"<p>{html_escape(str(description))}</p>")
+                if evidence:
+                    evidence_text = ResearchPage._format_section(evidence)
+                    details.append(f"<p><b>Evidence</b><br>{html_escape(evidence_text).replace(chr(10), '<br>')}</p>")
+                for key, label in (("recommendation", "Suggested direction"), ("method", "Method"), ("dataset", "Dataset")):
+                    value = item.get(key)
+                    if value:
+                        details.append(f"<p><b>{label}:</b> {html_escape(str(value))}</p>")
+                body = "".join(details) or "<p>Potential direction inferred from the discovered literature.</p>"
+            else:
+                title = f"Potential direction {index}"
+                body = f"<p>{html_escape(str(item))}</p>"
+            cards.append(
+                "<div style='background:#FFFFFF;border:1px solid #DCE7F5;border-radius:10px;padding:14px;margin:8px 2px;'>"
+                f"<h3 style='color:#20324A;margin:0 0 8px 0;'>{index}. {html_escape(str(title))}</h3>{body}</div>"
             )
-        )
+        warning = gaps.get("warning") or "Potential research gaps are heuristic signals and should be validated against the literature."
+        header = f"<p style='color:#607086;'>{html_escape(str(warning))}</p>"
+        if not cards:
+            return header + "<p style='color:#607086;'>No potential research directions were identified in this result.</p>"
+        return header + "".join(cards)
 
     # =========================================================
     # PAPER TABLE
@@ -6460,108 +6886,56 @@ class ResearchPage(QWidget):
     # =========================================================
 
     def _show_selected_paper(self):
-
-        rows = (
-            self.paper_table.selectionModel()
-            .selectedRows()
-        )
-
+        rows = self.paper_table.selectionModel().selectedRows()
         if not rows:
-
             self.paper_detail.clear()
-
             return
-
         row = rows[0].row()
-
-        papers = self.research_result.get(
-            "papers",
-            []
-        )
-
+        papers = self.research_result.get("papers", [])
         if row >= len(papers):
-
             return
-
         paper = papers[row]
+        def esc(value):
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(map(str, value))
+            return html_escape(str(value or "-"))
 
-        lines = []
+        doi = str(paper.get("doi") or "").strip()
+        source_url = str(paper.get("url") or "").strip()
+        if not source_url and doi:
+            source_url = doi if doi.startswith(("http://", "https://")) else f"https://doi.org/{doi.removeprefix('doi:')}"
+        parsed = urlparse(source_url)
+        source_link = ""
+        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+            source_link = f"<a href='{html_escape(source_url, quote=True)}'>Open publication source</a>"
+        elif doi:
+            doi_url = f"https://doi.org/{doi.removeprefix('doi:')}"
+            source_link = f"<a href='{html_escape(doi_url, quote=True)}'>Open DOI source</a>"
+        else:
+            source_link = "No source link is available for this paper."
 
-        lines.append(
-            f"TITLE\n{paper.get('title', '-')}"
-        )
-
-        lines.append(
-            f"AUTHORS\n"
-            f"{', '.join(paper.get('authors', [])) or '-'}"
-        )
-
-        lines.append(
-            f"YEAR\n{paper.get('year') or '-'}"
-        )
-
-        lines.append(
-            f"VENUE\n{paper.get('venue') or '-'}"
-        )
-
-        lines.append(
-            f"DOI\n{paper.get('doi') or '-'}"
-        )
-
-        lines.append(
-            f"RELEVANCE SCORE\n"
-            f"{self._format_score(paper.get('relevance_score'))}"
-        )
-
-        lines.append(
-            f"Dataset Usage Confidence\n"
-            f"{paper.get('dataset_usage_confidence', '-')}"
-        )
-
-        evidence = paper.get(
-            "dataset_usage_evidence",
-            []
-        )
-
-        if evidence:
-
-            lines.append(
-                "Evidence\n"
-                + "\n".join(
-                    f"• {item}"
-                    for item in evidence
-                )
-            )
-
-        limitations = paper.get(
-            "dataset_usage_limitations",
-            []
-        )
-
-        if limitations:
-
-            lines.append(
-                "Limitations\n"
-                + "\n".join(
-                    f"• {item}"
-                    for item in limitations
-                )
-            )
-
-        abstract = paper.get(
-            "abstract",
-            ""
-        )
-
+        rows_html = [
+            f"<h2>{esc(paper.get('title') or 'Untitled')}</h2>",
+            f"<p><b>Authors:</b> {esc(paper.get('authors'))}<br>",
+            f"<b>Year:</b> {esc(paper.get('year'))}<br>",
+            f"<b>Venue:</b> {esc(paper.get('venue'))}<br>",
+            f"<b>Source:</b> {esc(paper.get('source'))}<br>",
+            f"<b>DOI:</b> {esc(doi)}<br>",
+            f"<b>Relevance:</b> {esc(self._format_score(paper.get('relevance_score')))}<br>",
+            f"<b>Dataset usage confidence:</b> {esc(paper.get('dataset_usage_confidence'))}</p>",
+            f"<p>{source_link}</p>",
+        ]
+        for label, key in (("Dataset usage evidence", "dataset_usage_evidence"),
+                           ("Dataset usage limitations", "dataset_usage_limitations")):
+            values = paper.get(key) or []
+            if isinstance(values, str):
+                values = [values]
+            if values:
+                rows_html.append(f"<h3>{label}</h3><ul>{''.join(f'<li>{esc(value)}</li>' for value in values)}</ul>")
+        abstract = paper.get("abstract")
         if abstract:
-
-            lines.append(
-                f"Abstract\n{abstract}"
-            )
-
-        self.paper_detail.setPlainText(
-            "\n\n".join(lines)
-        )
+            rows_html.append(f"<h3>Abstract</h3><p>{esc(abstract)}</p>")
+        self.paper_detail.setHtml("".join(rows_html))
 
     # =========================================================
     # HELPERS
@@ -7381,36 +7755,68 @@ class ResearchLandscapeToolPage(QWidget):
         card.setObjectName("contentCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(10)
-
+        layout.setSpacing(8)
         heading = QLabel(title)
         heading.setObjectName("sectionTitle")
         layout.addWidget(heading)
 
-        rows = self._listify(value)
-        if not rows:
-            empty = QLabel("No distribution data available.")
+        normalized = []
+        for item in self._listify(value):
+            if isinstance(item, tuple) and len(item) == 2:
+                label, amount = item
+                percent = False
+            elif isinstance(item, dict):
+                label = self._pick(item, "method", "topic", "label", "name", "category", "year", default="Item")
+                raw = self._pick(item, "percentage", "percent", "confidence", "score", "count", "paper_count", "value")
+                percent = "percentage" in item or "percent" in item
+                amount = raw
+            else:
+                label, amount, percent = str(item), None, False
+            try:
+                numeric = float(amount)
+            except (TypeError, ValueError):
+                numeric = None
+            normalized.append((str(label), numeric, percent, self._pretty(amount) if amount is not None else ""))
+
+        chart_rows = [row for row in normalized if row[1] is not None]
+        if chart_rows:
+            chart_rows = chart_rows[:10]
+            figure = Figure(figsize=(10, max(2.2, 0.36 * len(chart_rows) + 0.8)), tight_layout=True)
+            axis = figure.subplots()
+            labels = [row[0] for row in reversed(chart_rows)]
+            values = [row[1] for row in reversed(chart_rows)]
+            is_percent = all(row[2] for row in chart_rows)
+            bars = axis.barh(labels, values, color="#4F8CFF", height=0.62)
+            axis.set_xlabel("Papers (%)" if is_percent else "Number of papers", fontsize=9, color="#64748B")
+            axis.tick_params(axis="both", labelsize=9, colors="#53667D")
+            for spine in ("top", "right", "left"):
+                axis.spines[spine].set_visible(False)
+            axis.grid(axis="x", color="#E8EEF6", linewidth=0.7)
+            axis.set_axisbelow(True)
+            maximum = max(values, default=0)
+            axis.set_xlim(0, min(110, max(1, maximum * 1.18)) if is_percent else max(1, maximum * 1.18))
+            for bar, row in zip(bars, reversed(chart_rows)):
+                label = f"{row[1]:g}%" if row[2] else f"{row[1]:g}"
+                axis.text(row[1] + max(0.15, maximum * 0.015), bar.get_y() + bar.get_height() / 2,
+                          label, va="center", fontsize=8, color="#344158")
+            canvas = FigureCanvasQTAgg(figure)
+            canvas.setMinimumHeight(180)
+            canvas.setMaximumHeight(360)
+            layout.addWidget(canvas)
+        elif normalized:
+            for label, _amount, _percent, raw in normalized[:10]:
+                row = QHBoxLayout()
+                name = QLabel(label)
+                name.setObjectName("cardDescription")
+                value_label = QLabel(raw)
+                value_label.setObjectName("scoreBadge")
+                row.addWidget(name, 1)
+                row.addWidget(value_label)
+                layout.addLayout(row)
+        else:
+            empty = QLabel("Belum ada data distribusi untuk ditampilkan.")
             empty.setObjectName("cardDescription")
             layout.addWidget(empty)
-        else:
-            for item in rows[:12]:
-                if isinstance(item, tuple) and len(item) == 2:
-                    label, amount = item
-                elif isinstance(item, dict):
-                    label = self._pick(item, "method", "topic", "label", "name", "category", default="Item")
-                    amount = self._pick(item, "percentage", "percent", "confidence", "score", "count", "value", default="-")
-                else:
-                    label = str(item)
-                    amount = ""
-                row = QHBoxLayout()
-                name_label = QLabel(str(label))
-                name_label.setObjectName("cardDescription")
-                value_label = QLabel(self._pretty(amount))
-                value_label.setObjectName("scoreBadge")
-                row.addWidget(name_label, 1)
-                row.addWidget(value_label, 0)
-                layout.addLayout(row)
-
         self.content.addWidget(card)
 
     def update_from_result(self, result):
@@ -7455,6 +7861,7 @@ class ResearchLandscapeToolPage(QWidget):
             landscape,
             "method_distribution", "methods", "method_counts", "top_methods", "dominant_methods",
         )
+        sources = self._pick(landscape, "source_distribution", "sources", "source_counts")
         topics = self._pick(
             landscape,
             "topic_distribution", "topics", "topic_counts", "top_topics", "research_topics",
@@ -7470,6 +7877,8 @@ class ResearchLandscapeToolPage(QWidget):
 
         if methods:
             self._add_distribution_card("Method Distribution", methods)
+        if sources:
+            self._add_distribution_card("Publication Sources", sources)
         if topics:
             self._add_distribution_card("Research Topics", topics)
         if venues:
@@ -7478,14 +7887,16 @@ class ResearchLandscapeToolPage(QWidget):
             self._add_distribution_card("Publication Years", years)
 
         # Always expose the full structured landscape so no backend field is hidden.
-        if not any((methods, topics, venues, years)):
+        if not any((methods, sources, topics, venues, years)):
             self._add_text_card(
                 "Landscape Analysis",
                 self._format_mapping(landscape) or "No landscape details available.",
             )
         else:
             details = {k: v for k, v in landscape.items() if k not in {
-                "summary", "method_distribution", "methods", "method_counts", "top_methods", "dominant_methods",
+                "summary", "paper_count", "status", "status_type",
+                "method_distribution", "methods", "method_counts", "top_methods", "dominant_methods",
+                "source_distribution", "sources", "source_counts", "research_activity",
                 "topic_distribution", "topics", "topic_counts", "top_topics", "research_topics",
                 "venue_distribution", "venues", "venue_counts", "top_venues",
                 "publication_years", "year_distribution", "years", "publication_trend",
@@ -7499,36 +7910,40 @@ class ResearchLandscapeToolPage(QWidget):
 
 
 class ResearchGapToolPage(QWidget):
-    """Standalone potential research gap explorer."""
+    """Explain candidate research gaps and recommend practical next steps."""
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
         self.research_result: Dict[str, Any] = {}
-        self.build_ui()
+        self._explanation_thread: QThread | None = None
+        self._explanation_worker: ResearchGapExplanationWorker | None = None
+        self._attempted_explanation_this_session = False
+        self._build_ui()
 
-    def build_ui(self):
+    def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 25, 30, 25)
-        root.setSpacing(16)
-
+        root.setSpacing(14)
         header = QHBoxLayout()
-        box = QVBoxLayout()
+        title_box = QVBoxLayout()
         title = QLabel("Research Gap")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Explore potential research directions inferred from the analyzed literature.")
+        subtitle = QLabel("Pahami celah riset yang terindikasi dan tentukan langkah penelitian berikutnya.")
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
-        box.addWidget(title)
-        box.addWidget(subtitle)
-        header.addLayout(box, 1)
-        refresh = QPushButton("Refresh")
-        refresh.setObjectName("primaryButton")
-        refresh.clicked.connect(self.refresh)
-        header.addWidget(refresh)
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        self.explain_button = QPushButton("Jelaskan dengan Gemini")
+        self.explain_button.setObjectName("primaryButton")
+        self.explain_button.setMinimumHeight(40)
+        self.explain_button.clicked.connect(self.explain_gaps)
+        header.addWidget(self.explain_button, 0, Qt.AlignTop)
         root.addLayout(header)
-
-        self.status = QLabel("No research result available.")
+        self.status = QLabel("Jalankan Academic Research untuk melihat kandidat celah riset.")
         self.status.setObjectName("statusLabel")
+        self.status.setWordWrap(True)
         root.addWidget(self.status)
 
         scroll = QScrollArea()
@@ -7556,21 +7971,22 @@ class ResearchGapToolPage(QWidget):
 
     def show_empty_state(self):
         self.research_result = {}
-        self.status.setText("Run Academic Research first to unlock Research Gap.")
+        self.status.setText("Jalankan Academic Research terlebih dahulu untuk menemukan kandidat gap.")
+        self.explain_button.setEnabled(False)
         self.clear_content()
         card = QFrame()
         card.setObjectName("contentCard")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(30, 40, 30, 40)
-        title = QLabel("Research Gap belum tersedia")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(30, 40, 30, 40)
+        title = QLabel("Belum ada hasil Research Gap")
         title.setObjectName("sectionTitle")
         title.setAlignment(Qt.AlignCenter)
-        desc = QLabel("Run Academic Research to analyze potential research gaps from the discovered literature.")
-        desc.setObjectName("cardDescription")
-        desc.setWordWrap(True)
-        desc.setAlignment(Qt.AlignCenter)
-        lay.addWidget(title)
-        lay.addWidget(desc)
+        description = QLabel("Setelah Academic Research menemukan paper, kandidat gap dan rekomendasi penelitian akan muncul di sini.")
+        description.setObjectName("cardDescription")
+        description.setWordWrap(True)
+        description.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        layout.addWidget(description)
         self.content.addWidget(card)
         self.content.addStretch()
 
@@ -7582,94 +7998,203 @@ class ResearchGapToolPage(QWidget):
             self.show_empty_state()
 
     def update_from_result(self, result):
-        self.research_result = result or {}
+        self.research_result = result if isinstance(result, dict) else {}
         gaps = self.research_result.get("gaps", {})
         summary = gaps.get("summary", {}) if isinstance(gaps, dict) else {}
         items = []
         if isinstance(gaps, dict):
             items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        elif isinstance(gaps, list):
+            items = gaps
         if not isinstance(items, list):
             items = []
-
-        self.status.setText("Potential research gap analysis loaded from Academic Research.")
+        self.explain_button.setEnabled(bool(items) and self._explanation_thread is None)
+        self.status.setText(f"{len(self.research_result.get('papers', []))} paper dianalisis; {len(items)} kandidat gap terdeteksi.")
         self.clear_content()
 
-        cards = QHBoxLayout()
+        metrics = QHBoxLayout()
         gap_count = summary.get("gap_count", len(items)) if isinstance(summary, dict) else len(items)
-        conf = summary.get("overall_confidence", summary.get("confidence", "—")) if isinstance(summary, dict) else "—"
-        cards.addWidget(InfoCard("Potential Gaps", str(gap_count), "Detected candidates"))
-        cards.addWidget(InfoCard("Confidence", str(conf), "System estimation"))
-        cards.addWidget(InfoCard("Papers", str(len(self.research_result.get("papers", []))), "Literature analyzed"))
-        self.content.addLayout(cards)
+        metrics.addWidget(InfoCard("Kandidat gap", str(gap_count), "Perlu ditinjau, bukan klaim pasti"))
+        metrics.addWidget(InfoCard("Paper dianalisis", str(len(self.research_result.get("papers", []))), "Literatur yang ditemukan"))
+        explanation = self.research_result.get("gap_explanation") or {}
+        explanation_source = explanation.get("source", "") if isinstance(explanation, dict) else ""
+        explanation_status = (
+            "Gemini" if explanation_source == "gemini"
+            else ("Gagal" if explanation_source == "error" else ("Lokal" if explanation else "Belum dibuat"))
+        )
+        metrics.addWidget(InfoCard("Penjelasan", explanation_status, "Memakai key Gemini tersimpan bila tersedia"))
+        self.content.addLayout(metrics)
 
-        summary_card = QFrame()
-        summary_card.setObjectName("contentCard")
-        sl = QVBoxLayout(summary_card)
-        st = QLabel("Gap Analysis Summary")
-        st.setObjectName("sectionTitle")
-        sl.addWidget(st)
-        summary_text = ResearchPage._format_section(summary) if summary else "No summary available."
-        sd = QLabel(summary_text)
-        sd.setObjectName("cardDescription")
-        sd.setWordWrap(True)
-        sl.addWidget(sd)
-        self.content.addWidget(summary_card)
+        if self._explanation_thread is not None:
+            self.content.addWidget(LoadingCard(
+                "Menjelaskan kandidat gap",
+                "Gemini sedang menyusun penjelasan sederhana dan rekomendasi penelitian berdasarkan temuan ini.",
+                self.container,
+            ))
+        elif isinstance(explanation, dict) and explanation.get("text"):
+            self._add_explanation_card(
+                explanation.get("text", ""), explanation_source,
+                explanation.get("reason", ""),
+            )
+        else:
+            self._add_explanation_card(
+                "Tekan tombol Jelaskan dengan Gemini untuk memahami arti temuan, bukti dan batasannya, serta saran penelitian lanjutan.",
+                "menunggu",
+            )
 
-        heading = QLabel("Potential Research Directions")
+        heading = QLabel("Kandidat yang ditemukan dari literatur")
         heading.setObjectName("sectionTitle")
         self.content.addWidget(heading)
-
         if not items:
-            empty = QLabel("No potential research gaps were detected.")
+            empty = QLabel("Belum ada kandidat gap yang terdeteksi. Periksa kembali jumlah dan kecocokan paper yang ditemukan.")
             empty.setObjectName("emptyState")
+            empty.setWordWrap(True)
             self.content.addWidget(empty)
         else:
-            for i, item in enumerate(items, 1):
-                self.content.addWidget(self._gap_card(i, item))
+            for index, item in enumerate(items, 1):
+                self.content.addWidget(self._gap_card(index, item))
 
-        note = QFrame()
-        note.setObjectName("contentCard")
-        nl = QVBoxLayout(note)
-        nt = QLabel("Interpretation")
-        nt.setObjectName("cardLabel")
-        nd = QLabel(
-            "These are POTENTIAL_GAP candidates produced from the available literature and dataset context. "
-            "They are not definitive scientific claims and should be validated through manual literature review."
-        )
-        nd.setObjectName("cardDescription")
-        nd.setWordWrap(True)
-        nl.addWidget(nt)
-        nl.addWidget(nd)
+        note = QLabel("Kandidat gap merupakan indikasi dari literatur yang berhasil ditemukan. Periksa paper terbaru dan validasi kebaruan sebelum menetapkan topik penelitian.")
+        note.setObjectName("cardDescription")
+        note.setWordWrap(True)
         self.content.addWidget(note)
         self.content.addStretch()
+
+    def _add_explanation_card(self, text, source, reason=""):
+
+        card = QFrame()
+        card.setObjectName("contentCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(8)
+        title = QLabel("Penjelasan dan saran penelitian")
+        title.setObjectName("sectionTitle")
+        source_names = {
+            "gemini": "Gemini menggunakan API key tersimpan",
+            "local": "Penjelasan lokal (Gemini tidak tersedia)",
+            "error": "Penjelasan belum berhasil dibuat",
+            "menunggu": "Belum dibuat",
+        }
+        source_label = QLabel(f"Sumber: {source_names.get(source, source)}")
+        source_label.setObjectName("statusLabel")
+        if reason:
+            reason_label = QLabel(reason)
+            reason_label.setObjectName("errorState" if source == "error" else "cardDescription")
+            reason_label.setWordWrap(True)
+        markdown_document = QTextDocument()
+        markdown_document.setDefaultFont(self.font())
+        markdown_document.setMarkdown(str(text))
+        body = QLabel()
+        body.setObjectName("gapExplanationBody")
+        body.setTextFormat(Qt.RichText)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        body.setText(markdown_document.toHtml())
+        layout.addWidget(title)
+        layout.addWidget(source_label)
+        if reason:
+            layout.addWidget(reason_label)
+        layout.addWidget(body)
+        self.content.addWidget(card)
 
     @staticmethod
     def _gap_card(index, item):
         card = QFrame()
         card.setObjectName("contentCard")
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(20, 18, 20, 18)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
         if isinstance(item, dict):
-            title = item.get("title") or item.get("gap") or item.get("description") or "Potential research direction"
+            title = item.get("title") or item.get("gap") or "Kandidat celah riset"
+            description = item.get("description") or ""
+            evidence = item.get("evidence")
         else:
-            title = str(item)
-        lab = QLabel(f"{index:02d}  {title}")
-        lab.setObjectName("sectionTitle")
-        lab.setWordWrap(True)
-        lay.addWidget(lab)
-        if isinstance(item, dict):
-            for key, value in item.items():
-                if key in {"title", "gap", "description"} or value in (None, "", [], {}):
-                    continue
-                detail = QLabel(f"{ResearchPage._pretty_key(key)}: {ResearchPage._format_value(value)}")
-                detail.setObjectName("cardDescription")
-                detail.setWordWrap(True)
-                lay.addWidget(detail)
+            title, description, evidence = str(item), "", None
+        heading = QLabel(f"{index:02d}  {title}")
+        heading.setObjectName("sectionTitle")
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        if description and description != title:
+            detail = QLabel(description)
+            detail.setObjectName("cardDescription")
+            detail.setWordWrap(True)
+            layout.addWidget(detail)
+        if evidence:
+            evidence_label = QLabel("Bukti ringkas: " + ResearchPage._format_value(evidence))
+            evidence_label.setObjectName("cardDescription")
+            evidence_label.setWordWrap(True)
+            layout.addWidget(evidence_label)
         return card
+
+    def ensure_explanation(self):
+        explanation = self.research_result.get("gap_explanation", {})
+        has_key = bool(get_saved_api_key())
+        needs_generation = (
+            not isinstance(explanation, dict)
+            or not explanation.get("text")
+            or explanation.get("source") == "error"
+            or (
+                explanation.get("source") == "local"
+                and has_key
+                and not self._attempted_explanation_this_session
+            )
+        )
+        if self.research_result and needs_generation:
+            self.explain_gaps()
+
+    def explain_gaps(self):
+        gaps = self.research_result.get("gaps", {})
+        if not self.research_result or self._explanation_thread is not None:
+            return
+        self._attempted_explanation_this_session = True
+        self.explain_button.setEnabled(False)
+        self._explanation_thread = QThread(self)
+        self._explanation_worker = ResearchGapExplanationWorker(gaps)
+        self._explanation_worker.moveToThread(self._explanation_thread)
+        self._explanation_thread.started.connect(self._explanation_worker.run)
+        self._explanation_worker.finished.connect(self._on_explanation_finished)
+        self._explanation_worker.failed.connect(self._on_explanation_failed)
+        self._explanation_worker.finished.connect(self._explanation_thread.quit)
+        self._explanation_worker.failed.connect(self._explanation_thread.quit)
+        self._explanation_thread.finished.connect(self._explanation_worker.deleteLater)
+        self._explanation_thread.finished.connect(self._cleanup_explanation_worker)
+        self.update_from_result(self.research_result)
+        self._explanation_thread.start()
+
+    def _on_explanation_finished(self, text, source, reason):
+        explanation = {"text": text, "source": source, "reason": reason}
+        self.research_result["gap_explanation"] = explanation
+        project_id = getattr(self.main_window, "current_project_id", None)
+        if project_id is not None:
+            try:
+                self.main_window.repository.save_workflow_section(project_id, "research", self.research_result)
+            except Exception as error:
+                print(f"Warning: gap explanation could not be saved: {error}")
+        self.update_from_result(self.research_result)
+
+    def _on_explanation_failed(self, error):
+        self.research_result["gap_explanation"] = {
+            "text": f"Penjelasan AI gagal dibuat: {error}. Periksa koneksi internet dan konfigurasi Gemini, lalu coba lagi.",
+            "source": "error",
+            "reason": "Periksa koneksi internet dan konfigurasi Gemini, lalu coba lagi.",
+        }
+        self.update_from_result(self.research_result)
+
+    def _cleanup_explanation_worker(self):
+        self._explanation_worker = None
+        self._explanation_thread = None
+        gaps = self.research_result.get("gaps", {})
+        if isinstance(gaps, dict):
+            items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        else:
+            items = gaps if isinstance(gaps, list) else []
+        self.explain_button.setEnabled(bool(items))
+        if self.research_result:
+            self.update_from_result(self.research_result)
+
 
 
 class ResearchReportToolPage(QWidget):
-    """Standalone report preview and HTML export."""
+    """Preview and direct PDF export for a complete research workflow."""
 
     def __init__(self, main_window):
         super().__init__()
@@ -7678,6 +8203,14 @@ class ResearchReportToolPage(QWidget):
         self.research_result: Dict[str, Any] = {}
         self.current_html = ""
         self.last_exported_path = None
+        self._chart_tempdir = None
+        self.chart_dir = None
+        self._report_thread = None
+        self._report_worker = None
+        self._report_operation = None
+        self._pending_pdf_path = None
+        self._report_project_id = None
+        self._report_dataset_title = None
         self.build_ui()
 
     def build_ui(self):
@@ -7687,27 +8220,23 @@ class ResearchReportToolPage(QWidget):
 
         header = QHBoxLayout()
         box = QVBoxLayout()
-        title = QLabel("Executive Research & ML Report")
+        title = QLabel("Laporan Penelitian")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Generate dan ekspor laporan komprehensif profil dataset, diagnostik 4 pilar kualitas, benchmark empiris ML, serta telaah literatur ilmiah.")
+        subtitle = QLabel("Laporan gabungan analisis dataset, evaluasi machine learning, dan telaah literatur akademik.")
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
         box.addWidget(title)
         box.addWidget(subtitle)
         header.addLayout(box, 1)
 
-        self.generate_button = QPushButton("Generate Report")
+        self.generate_button = QPushButton("Perbarui Pratinjau")
         self.generate_button.setObjectName("primaryButton")
         self.generate_button.clicked.connect(self.generate_preview)
         header.addWidget(self.generate_button)
 
-        self.browser_button = QPushButton("Buka di Browser / Print")
-        self.browser_button.clicked.connect(self.open_in_browser)
-        self.browser_button.setEnabled(False)
-        header.addWidget(self.browser_button)
-
-        self.export_button = QPushButton("Export HTML")
-        self.export_button.clicked.connect(self.export_html)
+        self.export_button = QPushButton("Simpan sebagai PDF")
+        self.export_button.setObjectName("primaryButton")
+        self.export_button.clicked.connect(self.export_pdf)
         self.export_button.setEnabled(False)
         header.addWidget(self.export_button)
         root.addLayout(header)
@@ -7716,22 +8245,30 @@ class ResearchReportToolPage(QWidget):
         self.status.setObjectName("statusLabel")
         root.addWidget(self.status)
 
-        self.preview = QTextEdit()
+        self.loading_card = LoadingCard(
+            "Menyusun laporan",
+            "Menyiapkan tata letak dan grafik dari hasil analisis.",
+            self,
+        )
+        self.loading_card.setVisible(False)
+        root.addWidget(self.loading_card)
+
+        self.preview = QTextBrowser()
         self.preview.setReadOnly(True)
+        self.preview.setOpenLinks(False)
+        self.preview.setOpenExternalLinks(False)
         root.addWidget(self.preview, 1)
         self.show_empty_state()
 
     def show_empty_state(self):
         self.research_result = {}
         self.current_html = ""
-        self.status.setText("Muat dataset atau jalankan analisis/ML/riset terlebih dahulu.")
+        self.status.setText("Jalankan semua tahap penelitian sebelum mengekspor laporan.")
         self.preview.setPlainText(
-            "Executive Report belum tersedia.\n\n"
-            "Silakan muat dataset dan jalankan Dataset Analysis, ML Intelligence, "
-            "atau Academic Research untuk menghasilkan laporan komprehensif."
+            "Laporan penelitian belum tersedia.\n\n"
+            "Muat dataset, lalu selesaikan Analisis Dataset, ML Intelligence, dan Academic Research."
         )
         self.export_button.setEnabled(False)
-        self.browser_button.setEnabled(False)
 
     def update_from_result(self, result):
         self.research_result = result or {}
@@ -7740,7 +8277,33 @@ class ResearchReportToolPage(QWidget):
     def refresh_from_main(self):
         self.research_result = getattr(self.main_window.research_page, "research_result", {}) or {}
 
+    def _workflow_missing(self):
+        missing = []
+        if getattr(self.main_window, "current_dataset", None) is None:
+            missing.append("Dataset belum dimuat")
+        if not getattr(self.main_window, "analysis_result", {}):
+            missing.append("Analisis Dataset belum dijalankan")
+        ml_page = self.main_window.ml_page
+        ml_result = getattr(ml_page, "last_intelligence_result", {}) or {}
+        if not (getattr(ml_page, "last_task_result", {}) and getattr(ml_page, "last_method_result", {}) and ml_result and ml_result.get("status") != "ERROR"):
+            missing.append("ML Intelligence belum selesai")
+        research = getattr(self.main_window.research_page, "research_result", {}) or self.research_result
+        if not research or research.get("status") not in {"SUCCESS", "PARTIAL"}:
+            missing.append("Academic Research belum selesai")
+            return missing
+        gaps = research.get("gaps") or {}
+        if isinstance(gaps, dict):
+            gap_items = gaps.get("gaps") or gaps.get("potential_gaps") or gaps.get("items") or []
+        else:
+            gap_items = gaps if isinstance(gaps, list) else []
+        explanation = research.get("gap_explanation") or {}
+        if gap_items and not (isinstance(explanation, dict) and explanation.get("text")):
+            missing.append("Penjelasan Research Gap belum dibuat")
+        return missing
+
     def generate_preview(self):
+        if self._report_thread is not None:
+            return
         if not self.research_result:
             self.refresh_from_main()
 
@@ -7750,73 +8313,255 @@ class ResearchReportToolPage(QWidget):
         ml_data = getattr(self.main_window.ml_page, "last_intelligence_result", {}) or {}
         research_data = self.research_result or getattr(self.main_window.research_page, "research_result", {}) or {}
 
-        # If completely empty
         if not has_dataset and not analysis_data and not ml_data and not research_data:
             self.show_empty_state()
             return
 
+        missing = self._workflow_missing()
+        if missing:
+            self._chart_tempdir = None
+            self.chart_dir = None
+            self.current_html = ""
+            self.status.setText("Selesaikan semua tahap penelitian untuk membuka ekspor PDF.")
+            self.preview.setPlainText("Laporan belum siap. Selesaikan tahap berikut:\n\n" + "\n".join(f"- {item}" for item in missing))
+            self.export_button.setEnabled(False)
+            return
+
         try:
-            self.current_html = self.report_generator.generate(
-                dataset_name=filename,
-                analysis_data=analysis_data,
-                ml_data=ml_data,
-                research_data=research_data,
+            dataset_title = Path(filename).stem or filename
+            self._report_project_id = getattr(self.main_window, "current_project_id", None)
+            self._report_dataset_title = dataset_title
+            self._chart_tempdir = tempfile.TemporaryDirectory(prefix="dataset_research_report_")
+            self.chart_dir = Path(self._chart_tempdir.name)
+            self.current_html = ""
+            self.preview.setPlainText("Laporan sedang disusun. Pratinjau akan tampil setelah grafik selesai dibuat.")
+            self.generate_button.setEnabled(False)
+            self.export_button.setEnabled(False)
+            self.loading_card.title_label.setText("Menyusun laporan dan grafik")
+            self.loading_card.description_label.setText(
+                "Aplikasi sedang membuat histogram, korelasi, dan grafik ringkasan pada background."
             )
-            self.preview.setHtml(self.current_html)
-            self.status.setText(
-                f"Laporan berhasil dibuat untuk '{filename}' "
-                f"(Analisis: {'Ya' if analysis_data else 'Belum'}, "
-                f"ML: {'Ya' if ml_data else 'Belum'}, "
-                f"Riset: {'Ya' if research_data else 'Belum'})."
+            self.loading_card.setVisible(True)
+            worker = ReportGenerationWorker(
+                dataset_title, analysis_data, ml_data, research_data,
+                self.main_window.current_dataset, str(self.chart_dir),
             )
-            self.export_button.setEnabled(True)
-            self.browser_button.setEnabled(True)
+            self._start_report_worker(worker, "preview")
         except Exception as exc:
+            self._finish_report_busy()
             self.status.setText(f"Gagal membuat laporan: {exc}")
             QMessageBox.warning(self, "Report Generation Error", f"Terjadi kesalahan saat membuat laporan: {exc}")
 
-    def open_in_browser(self):
-        if not self.current_html:
-            self.generate_preview()
-        if not self.current_html:
+    def _start_report_worker(self, worker, operation):
+        self._report_operation = operation
+        self._report_thread = QThread(self)
+        self._report_worker = worker
+        worker.moveToThread(self._report_thread)
+        self._report_thread.started.connect(worker.run)
+        if operation == "preview":
+            worker.finished.connect(self._on_report_generated)
+        else:
+            worker.finished.connect(self._on_pdf_exported)
+        worker.failed.connect(self._on_report_worker_failed)
+        worker.finished.connect(self._report_thread.quit)
+        worker.failed.connect(self._report_thread.quit)
+        self._report_thread.finished.connect(worker.deleteLater)
+        self._report_thread.finished.connect(self._cleanup_report_worker)
+        self._report_thread.start()
+
+    def _on_report_generated(self, content, chart_dir):
+        current_project_id = getattr(self.main_window, "current_project_id", None)
+        current_dataset_title = Path(self.main_window._current_filename()).stem
+        if current_project_id != self._report_project_id or current_dataset_title != self._report_dataset_title:
+            self.current_html = ""
+            self._chart_tempdir = None
+            self.chart_dir = None
+            self.status.setText("Dataset berubah saat laporan disusun. Perbarui pratinjau untuk dataset aktif.")
+            self._finish_report_busy()
+            self.export_button.setEnabled(False)
             return
+        self.current_html = content
+        self.chart_dir = Path(chart_dir)
+        self.preview.setSearchPaths([str(self.chart_dir)])
+        self.preview.setHtml(self.current_html)
+        self.status.setText(
+            f"Pratinjau lengkap untuk dataset '{self._report_dataset_title}'."
+        )
+        self._finish_report_busy()
+        self.export_button.setEnabled(bool(self.current_html) and not self._workflow_missing())
 
-        filename = Path(self.main_window._current_filename()).stem or "dataset"
-        temp_dir = Path(tempfile.gettempdir()) / "dataset_research_reports"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir / f"{filename}_report_{int(datetime.now().timestamp())}.html"
+    def _on_pdf_exported(self, output_path):
+        self.last_exported_path = Path(output_path)
+        self.status.setText(f"PDF berhasil disimpan: {output_path}")
+        self._finish_report_busy()
+        self.export_button.setEnabled(bool(self.current_html) and not self._workflow_missing())
+        QMessageBox.information(self, "PDF Tersimpan", f"Laporan berhasil disimpan ke:\n{output_path}")
 
-        try:
-            temp_file.write_text(self.current_html, encoding="utf-8")
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(temp_file)))
-        except OSError as exc:
-            QMessageBox.critical(self, "Error Buka Browser", str(exc))
+    def _on_report_worker_failed(self, error):
+        operation = self._report_operation
+        self._finish_report_busy()
+        self.export_button.setEnabled(bool(self.current_html) and not self._workflow_missing())
+        self.status.setText("Gagal membuat pratinjau laporan." if operation == "preview" else "Gagal menyimpan PDF.")
+        QMessageBox.critical(self, "Proses Laporan Gagal", str(error))
 
-    def export_html(self):
-        if not self.current_html:
+    def _finish_report_busy(self):
+        self.loading_card.setVisible(False)
+        self.generate_button.setEnabled(True)
+
+    def _cleanup_report_worker(self):
+        self._report_worker = None
+        self._report_thread = None
+        self._report_operation = None
+
+    def export_pdf(self):
+        if self._report_thread is not None:
+            return
+        if not self.current_html or self._workflow_missing():
             self.generate_preview()
         if not self.current_html:
             return
 
         filename = Path(self.main_window._current_filename()).stem or "dataset"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Executive Report", f"{filename}_research_report.html", "HTML Files (*.html)"
+            self, "Simpan Laporan PDF", f"Laporan_Riset_{filename}.pdf", "Dokumen PDF (*.pdf)"
         )
         if not path:
             return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
         try:
-            Path(path).write_text(self.current_html, encoding="utf-8")
-            self.last_exported_path = Path(path)
-            res = QMessageBox.information(
-                self,
-                "Report Exported",
-                f"Laporan berhasil disimpan ke:\n{path}\n\nBuka laporan sekarang di browser?",
-                QMessageBox.Yes | QMessageBox.No,
+            self._pending_pdf_path = path
+            self.generate_button.setEnabled(False)
+            self.export_button.setEnabled(False)
+            self.loading_card.title_label.setText("Menyimpan PDF")
+            self.loading_card.description_label.setText(
+                "Menyusun halaman dan menyematkan grafik ke dokumen PDF."
             )
-            if res == QMessageBox.Yes:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-        except OSError as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
+            self.loading_card.setVisible(True)
+            worker = ReportPdfWorker(self.current_html, str(self.chart_dir or ""), path)
+            self._start_report_worker(worker, "pdf")
+        except Exception as exc:
+            self._finish_report_busy()
+            QMessageBox.critical(self, "Gagal Mengekspor PDF", f"PDF tidak dapat disimpan:\n{exc}")
+
+class ResearchInsightsPage(QWidget):
+    """One workspace for literature landscape and potential research gaps."""
+
+    def __init__(self, landscape_page, gap_page):
+        super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("researchInsightsTabs")
+        self.tabs.addTab(landscape_page, "Landscape")
+        self.tabs.addTab(gap_page, "Research Gap")
+        root.addWidget(self.tabs)
+        self.landscape_page = landscape_page
+        self.gap_page = gap_page
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        if self.tabs.widget(index) is self.gap_page:
+            self.gap_page.ensure_explanation()
+
+
+class AboutPage(QWidget):
+    """Application information, authorship, licensing, and privacy notes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 28)
+        root.setSpacing(16)
+
+        heading = QLabel("About")
+        heading.setObjectName("aboutPageTitle")
+        root.addWidget(heading)
+
+        subtitle = QLabel(
+            "Informasi singkat tentang aplikasi, pengembang, dan lisensinya."
+        )
+        subtitle.setObjectName("aboutPageSubtitle")
+        subtitle.setWordWrap(True)
+        root.addWidget(subtitle)
+
+        hero = QFrame()
+        hero.setObjectName("aboutHero")
+        hero_layout = QHBoxLayout(hero)
+        hero_layout.setContentsMargins(24, 22, 24, 22)
+        hero_layout.setSpacing(18)
+
+        logo = QLabel()
+        logo.setObjectName("aboutLogo")
+        logo.setFixedSize(76, 76)
+        logo.setAlignment(Qt.AlignCenter)
+        logo_path = _resource_path("assets/logo.jpg")
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                logo.setPixmap(pixmap.scaled(76, 76, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        else:
+            logo.setText("DR")
+        hero_layout.addWidget(logo, 0, Qt.AlignVCenter)
+
+        identity = QVBoxLayout()
+        identity.setSpacing(5)
+        app_name = QLabel("Dataset Research")
+        app_name.setObjectName("aboutHeroTitle")
+        identity.addWidget(app_name)
+        app_description = QLabel(
+            "Analisis dataset dan dukungan riset dalam satu aplikasi desktop."
+        )
+        app_description.setObjectName("aboutBody")
+        app_description.setWordWrap(True)
+        identity.addWidget(app_description)
+        version_label = QLabel("Versi 4.0.0")
+        version_label.setObjectName("aboutVersion")
+        identity.addWidget(version_label)
+        hero_layout.addLayout(identity, 1)
+        root.addWidget(hero)
+
+        cards = QGridLayout()
+        cards.setHorizontalSpacing(14)
+        cards.setVerticalSpacing(14)
+        root.addLayout(cards)
+
+        def add_card(row, column, title, body):
+            card = QFrame()
+            card.setObjectName("aboutInfoCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(18, 16, 18, 18)
+            card_layout.setSpacing(8)
+            card_title = QLabel(title)
+            card_title.setObjectName("aboutCardTitle")
+            card_layout.addWidget(card_title)
+            card_body = QLabel(body)
+            card_body.setObjectName("aboutBody")
+            card_body.setWordWrap(True)
+            card_layout.addWidget(card_body)
+            card_layout.addStretch()
+            cards.addWidget(card, row, column)
+
+        add_card(0, 0, "Pengembang", "Abdul Muhis\nSains Data, UIN K.H. Abdurrahman Wahid Pekalongan")
+        add_card(
+            0, 1, "Lisensi",
+            "MIT License. Penggunaan dan distribusi harus menyertakan pemberitahuan "
+            "hak cipta serta teks lisensi. Lisensi pustaka pihak ketiga mengikuti "
+            "ketentuan masing-masing.\nCopyright (c) 2026 Abdul Muhis",
+        )
+        add_card(
+            1, 0, "Data dan privasi",
+            "Telemetri penggunaan hanya memuat event, versi aplikasi, status, dan durasi. "
+            "File dataset, path, hasil analisis, dan API key tidak masuk ke telemetri. "
+            "Fitur Gemini mengirim permintaan ke layanan Google saat digunakan.",
+        )
+        add_card(
+            1, 1, "Ruang lingkup aplikasi",
+            "Profil dan kualitas dataset, evaluasi machine learning, pencarian paper, "
+            "research landscape dan gap, serta laporan penelitian.",
+        )
+        root.addStretch()
+
 
 class MainWindow(QMainWindow):
     """Main application window for Dataset Research.
@@ -7877,6 +8622,7 @@ class MainWindow(QMainWindow):
         self.current_project_id = None
 
         self._build_window()
+        self._restore_latest_project()
         get_telemetry().track("app_open", status="started")
 
 
@@ -7930,26 +8676,40 @@ class MainWindow(QMainWindow):
 
         self.dashboard = DashboardPage(self)
         self.upload_page = UploadPage(self)
+        self.dataset_search_page = DatasetSearchPage(self)
+        self.dataset_preview_page = DatasetPreviewPage()
+        self.datasets_tabs = QTabWidget()
+        self.datasets_tabs.setObjectName("datasetsTabs")
+        self.datasets_tabs.addTab(self.upload_page, "Upload from computer")
+        self.datasets_tabs.addTab(self.dataset_search_page, "Find online")
+        self.datasets_tabs.addTab(self.dataset_preview_page, "Preview")
+        self.datasets_page = QWidget()
+        datasets_layout = QVBoxLayout(self.datasets_page)
+        datasets_layout.setContentsMargins(0, 0, 0, 0)
+        datasets_layout.setSpacing(0)
+        datasets_layout.addWidget(self.datasets_tabs)
+
         self.analysis_page = AnalysisPage(self)
         self.ml_page = MLIntelligencePage(self)
         self.research_page = ResearchPage(self)
-        self.dataset_search_page = DatasetSearchPage(self)
         self.papers_tool_page = PapersToolPage(self)
         self.landscape_tool_page = ResearchLandscapeToolPage(self)
         self.gap_tool_page = ResearchGapToolPage(self)
+        self.research_insights_page = ResearchInsightsPage(
+            self.landscape_tool_page, self.gap_tool_page
+        )
         self.report_tool_page = ResearchReportToolPage(self)
+        self.about_page = AboutPage()
 
         self.pages = {
             "dashboard": self.dashboard,
-            "dataset": self.upload_page,
+            "dataset": self.datasets_page,
             "analysis": self.analysis_page,
             "ml": self.ml_page,
             "research": self.research_page,
-            "dataset_search": self.dataset_search_page,
-            "papers": self.papers_tool_page,
-            "landscape": self.landscape_tool_page,
-            "gap": self.gap_tool_page,
+            "insights": self.research_insights_page,
             "report": self.report_tool_page,
+            "about": self.about_page,
         }
 
         for page in self.pages.values():
@@ -7957,15 +8717,13 @@ class MainWindow(QMainWindow):
 
         self._page_titles = {
             "dashboard": "Dashboard",
-            "dataset": "Dataset",
+            "dataset": "Datasets",
             "analysis": "Dataset Analysis",
             "ml": "ML Intelligence",
             "research": "Academic Research",
-            "dataset_search": "Dataset Search",
-            "papers": "Papers",
-            "landscape": "Research Landscape",
-            "gap": "Research Gap",
+            "insights": "Research Insights",
             "report": "Research Report",
+            "about": "About",
         }
 
         self.open_dashboard()
@@ -8048,25 +8806,21 @@ class MainWindow(QMainWindow):
         self.nav_buttons = {}
         self.nav_text_widgets = []
 
-        self._add_nav_button(layout, "dashboard", "⌂", "Dashboard")
-        self._add_nav_button(layout, "dataset", "▣", "Dataset")
-        self._add_nav_button(layout, "analysis", "◇", "Analysis")
-        self._add_nav_button(layout, "ml", "✦", "ML Intelligence")
-        self._add_nav_button(layout, "research", "◎", "Academic Research")
-        self._add_nav_button(layout, "dataset_search", "⌕", "Dataset Search")
-
+        self._add_nav_button(layout, "dashboard", chr(0x2302), "Dashboard")
+        self._add_nav_button(layout, "dataset", chr(0x25a6), "Datasets")
+        self._add_nav_button(layout, "analysis", chr(0x25c7), "Analysis")
+        self._add_nav_button(layout, "ml", chr(0x2726), "ML Intelligence")
+        self._add_nav_button(layout, "research", chr(0x25ce), "Academic Research")
+        self._add_nav_button(layout, "insights", chr(0x25c7), "Research Insights")
         layout.addSpacing(18)
 
-        tools = QLabel("RESEARCH TOOLS")
+        tools = QLabel("REPORTS")
         tools.setObjectName("sectionLabel")
         self.sidebar_section_labels.append(tools)
         layout.addWidget(tools)
 
         for key, icon, text, enabled in [
-            ("papers", "▤", "Papers", True),
-            ("landscape", "▥", "Research Landscape", True),
-            ("gap", "◇", "Research Gap", True),
-            ("report", "▰", "Research Report", True),
+            ("report", chr(0x25b0), "Research Report", True),
         ]:
             self._add_nav_button(
                 layout,
@@ -8076,6 +8830,13 @@ class MainWindow(QMainWindow):
                 enabled=enabled,
                 tool_item=True,
             )
+
+        layout.addSpacing(18)
+        about_section = QLabel("APP")
+        about_section.setObjectName("sectionLabel")
+        self.sidebar_section_labels.append(about_section)
+        layout.addWidget(about_section)
+        self._add_nav_button(layout, "about", chr(0x24D8), "About", tool_item=True)
 
         layout.addStretch()
 
@@ -8136,15 +8897,13 @@ class MainWindow(QMainWindow):
 
         callbacks = {
             "dashboard": self.open_dashboard,
-            "dataset": self.open_upload_page,
+            "dataset": self.open_datasets_page,
             "analysis": self.open_analysis_page,
             "ml": self.open_ml_page,
             "research": self.open_research_page,
-            "dataset_search": self.open_dataset_search_page,
-            "papers": self.open_papers_tool,
-            "landscape": self.open_landscape_tool,
-            "gap": self.open_gap_tool,
+            "insights": self.open_insights_page,
             "report": self.open_report_tool,
+            "about": self.open_about,
         }
 
         if key in callbacks:
@@ -8210,6 +8969,12 @@ class MainWindow(QMainWindow):
         self._show_page("dashboard")
 
     def open_upload_page(self):
+        self.datasets_tabs.setCurrentWidget(self.upload_page)
+        self._show_page("dataset")
+
+    def open_datasets_page(self):
+        target = self.dataset_preview_page if self.current_dataset is not None else self.upload_page
+        self.datasets_tabs.setCurrentWidget(target)
         self._show_page("dataset")
 
     def open_analysis_page(self):
@@ -8221,10 +8986,18 @@ class MainWindow(QMainWindow):
         self._show_page("analysis")
 
     def open_ml_page(self):
-        if self.current_dataset is None or not self.analysis_result:
+        if self.current_dataset is None:
             self.ml_page.show_empty_state()
-        else:
+        elif self.ml_page.last_task_result and self.ml_page.last_method_result:
+            self.ml_page.display_result(
+                self.ml_page.last_task_result, self.ml_page.last_method_result
+            )
+        elif self.ml_page.restore_saved_result():
+            pass
+        elif self.analysis_result:
             self.ml_page.update_dataset()
+        else:
+            self.ml_page.show_empty_state()
         self._show_page("ml")
 
     def open_research_page(self):
@@ -8233,32 +9006,37 @@ class MainWindow(QMainWindow):
         self._show_page("research")
 
     def open_dataset_search_page(self):
-        self._show_page("dataset_search")
+        self.datasets_tabs.setCurrentWidget(self.dataset_search_page)
+        self._show_page("dataset")
 
     def open_papers_tool(self):
         if not self.analysis_result or not self.research_page.research_result:
-            self.papers_tool_page.show_empty_state()
+            self.research_page.show_empty_state()
         else:
-            self.papers_tool_page.update_from_result(
-                self.research_page.research_result
-            )
-        self._show_page("papers")
+            self.papers_tool_page.update_from_result(self.research_page.research_result)
+            self.research_page.tabs.setCurrentWidget(self.research_page.papers_tab)
+        self._show_page("research")
+
+    def open_insights_page(self):
+        result = self.research_page.research_result
+        if result:
+            self.landscape_tool_page.update_from_result(result)
+            self.gap_tool_page.update_from_result(result)
+        else:
+            self.landscape_tool_page.show_empty_state()
+            self.gap_tool_page.show_empty_state()
+        self._show_page("insights")
+        self.research_insights_page._on_tab_changed(
+            self.research_insights_page.tabs.currentIndex()
+        )
 
     def open_landscape_tool(self):
-        if not self.analysis_result or not self.research_page.research_result:
-            self.landscape_tool_page.show_empty_state()
-        else:
-            self.landscape_tool_page.update_from_result(
-                self.research_page.research_result
-            )
-        self._show_page("landscape")
+        self.open_insights_page()
+        self.research_insights_page.tabs.setCurrentWidget(self.landscape_tool_page)
 
     def open_gap_tool(self):
-        if not self.analysis_result or not self.research_page.research_result:
-            self.gap_tool_page.show_empty_state()
-        else:
-            self.gap_tool_page.update_from_result(self.research_page.research_result)
-        self._show_page("gap")
+        self.open_insights_page()
+        self.research_insights_page.tabs.setCurrentWidget(self.gap_tool_page)
 
     def open_report_tool(self):
         has_data = (
@@ -8273,7 +9051,17 @@ class MainWindow(QMainWindow):
             self.report_tool_page.generate_preview()
         self._show_page("report")
 
+    def open_about(self):
+        self._show_page("about")
+
     def _current_filename(self):
+        if self.current_project_id is not None:
+            try:
+                project = self.repository.get_project(self.current_project_id)
+                if project and project.get("dataset_name"):
+                    return project["dataset_name"]
+            except Exception:
+                pass
         if self.current_file_path:
             try:
                 return Path(self.current_file_path).name
@@ -8294,12 +9082,130 @@ class MainWindow(QMainWindow):
     # DATASET STATE
     # =========================================================
 
+    @staticmethod
+    def _normalized_dataset_path(path):
+        if not path:
+            return "in-memory"
+        value = str(path)
+        if value == "in-memory":
+            return value
+        try:
+            return str(Path(value).resolve()).casefold()
+        except OSError:
+            return value.casefold()
+
+    def _ensure_current_project(self):
+        """Ensure the loaded dataset has its own local SQLite project/version."""
+        dataframe = self.current_dataset
+        if dataframe is None:
+            return None
+
+        dataset_path = str(self.current_file_path) if self.current_file_path else "in-memory"
+        project = (
+            self.repository.get_project(self.current_project_id)
+            if self.current_project_id is not None
+            else None
+        )
+        same_dataset = bool(
+            project
+            and self._normalized_dataset_path(project.get("dataset_path"))
+            == self._normalized_dataset_path(dataset_path)
+        )
+        if not same_dataset:
+            filename = Path(dataset_path).name if dataset_path != "in-memory" else "Dataset"
+            self.current_project_id = self.repository.create_project(
+                name=filename or "Dataset",
+                dataset_name=filename or "Dataset",
+                dataset_path=dataset_path,
+            )
+
+        if not self.version_manager.has_versions(self.current_project_id):
+            if dataset_path != "in-memory" and Path(dataset_path).exists():
+                self.version_manager.create_initial_version(
+                    self.current_project_id,
+                    dataset_path,
+                )
+            else:
+                self.version_manager.create_initial_version(
+                    self.current_project_id,
+                    dataframe=dataframe,
+                )
+        return self.current_project_id
+
+    def _restore_latest_project(self):
+        """Restore the newest usable local project and its completed features."""
+        for project in self.repository.list_projects():
+            project_id = project.get("id")
+            if project_id is None or not self.version_manager.has_versions(project_id):
+                continue
+            try:
+                dataframe = self.version_manager.load_current_dataframe(project_id)
+            except Exception as error:
+                print(f"Warning: could not restore project {project_id}: {error}")
+                continue
+
+            self.current_project_id = project_id
+            self.current_dataset = dataframe
+            original_path = project.get("dataset_path")
+            version = self.version_manager.get_current_version(project_id)
+            version_path = version.file_path if version else None
+            self.current_file_path = (
+                original_path
+                if original_path and original_path != "in-memory" and Path(original_path).exists()
+                else version_path
+            )
+            filename = project.get("dataset_name") or project.get("name") or "Dataset"
+            state = self.repository.get_workflow_state(project_id) or {}
+
+            self.analysis_result = state.get("analysis") or {}
+            self.dashboard.update_dataset(dataframe, filename)
+            self.dataset_preview_page.update_dataset(dataframe, filename)
+            self.analysis_page.update_dataset(dataframe, filename)
+
+            task_result = state.get("ml_task") or {}
+            methods_result = state.get("ml_methods") or {}
+            if task_result and methods_result:
+                self.ml_page.last_task_result = task_result
+                self.ml_page.last_method_result = {
+                    key: value for key, value in methods_result.items()
+                    if key != "_intelligence_result"
+                }
+                self.ml_page.last_intelligence_result = methods_result.get("_intelligence_result") or {}
+                self.ml_page.display_result(task_result, self.ml_page.last_method_result)
+            elif self.analysis_result:
+                self.ml_page.update_dataset()
+
+            research_result = state.get("research") or {}
+            if research_result:
+                self.research_page.restore_result(research_result)
+                self.dashboard.update_research_result(research_result)
+                self.papers_tool_page.update_from_result(research_result)
+
+            self.dashboard.update_workflow_state(
+                has_dataset=True,
+                analysis_done=bool(self.analysis_result),
+                ml_done=bool(task_result and methods_result),
+                research_done=bool(research_result),
+            )
+
+            return
+
     def update_dataset_state(self):
         self.analysis_result = {}
+
+        try:
+            self._ensure_current_project()
+        except Exception as error:
+            print(f"Warning: could not initialize local project workflow: {error}")
 
         filename = self._current_filename()
 
         self.dashboard.update_dataset(
+            self.current_dataset,
+            filename,
+        )
+
+        self.dataset_preview_page.update_dataset(
             self.current_dataset,
             filename,
         )
@@ -8315,22 +9221,22 @@ class MainWindow(QMainWindow):
         self.landscape_tool_page.show_empty_state()
         self.gap_tool_page.show_empty_state()
         self.report_tool_page.show_empty_state()
+        self.dashboard.update_workflow_state(
+            has_dataset=self.current_dataset is not None,
+            analysis_done=False,
+            ml_done=False,
+            research_done=False,
+        )
 
     # =========================================================
     # DATASET ANALYSIS
     # =========================================================
 
-    def run_dataset_analysis(self):
+    def prepare_dataset_analysis(self):
         dataframe = self.current_dataset
-
         if dataframe is None:
             raise ValueError("No dataset is currently loaded.")
 
-        telemetry = get_telemetry()
-        analysis_started_at = datetime.now().timestamp()
-        telemetry.track("analysis_started", feature_name="dataset_analysis", status="started")
-
-        # Pastikan project dan v0 versioning tercatat
         if self.current_file_path and Path(self.current_file_path).exists():
             if self.current_project_id is None:
                 filename = Path(self.current_file_path).name
@@ -8342,13 +9248,11 @@ class MainWindow(QMainWindow):
             if not self.version_manager.has_versions(self.current_project_id):
                 try:
                     self.version_manager.create_initial_version(
-                        self.current_project_id,
-                        self.current_file_path,
+                        self.current_project_id, self.current_file_path
                     )
-                except Exception as ver_err:
-                    print(f"Warning: create_initial_version: {ver_err}")
+                except Exception as error:
+                    print(f"Warning: initial dataset version could not be saved: {error}")
         else:
-            # Fallback: dataset dimuat tanpa file path (misal HuggingFace)
             if self.current_project_id is None:
                 fallback_name = self._current_filename() or "dataset"
                 self.current_project_id = self.repository.create_project(
@@ -8359,36 +9263,64 @@ class MainWindow(QMainWindow):
             if not self.version_manager.has_versions(self.current_project_id):
                 try:
                     self.version_manager.create_initial_version(
-                        self.current_project_id,
-                        dataframe=dataframe,
+                        self.current_project_id, dataframe=dataframe
                     )
-                except Exception as ver_err:
-                    print(f"Warning: create_initial_version (in-memory): {ver_err}")
+                except Exception as error:
+                    print(f"Warning: in-memory dataset version could not be saved: {error}")
 
+        get_telemetry().track(
+            "analysis_started", feature_name="dataset_analysis", status="started"
+        )
+
+    def complete_dataset_analysis(self, result, duration_ms):
+        self.analysis_result = result
+        project_id = self.current_project_id
+        if project_id is not None:
+            try:
+                self.repository.save_workflow_section(project_id, "analysis", result)
+                self.repository.save_workflow_section(project_id, "ml_task", None)
+                self.repository.save_workflow_section(project_id, "ml_methods", None)
+                self.repository.save_workflow_section(project_id, "research", None)
+            except Exception as error:
+                print(f"Warning: analysis workflow could not be saved: {error}")
+
+        get_telemetry().track(
+            "analysis_completed", feature_name="dataset_analysis",
+            status="completed", duration_ms=duration_ms,
+        )
+        self.ml_page.last_task_result = {}
+        self.ml_page.last_method_result = {}
+        self.ml_page.last_intelligence_result = {}
+        self.ml_page.show_ready_state()
+        self.research_page.show_empty_state()
+        self.dashboard.update_workflow_state(
+            has_dataset=True, analysis_done=True, ml_done=False, research_done=False
+        )
+
+    def fail_dataset_analysis(self, duration_ms):
+        get_telemetry().track(
+            "analysis_failed", feature_name="dataset_analysis",
+            status="failed", duration_ms=duration_ms,
+        )
+
+    def run_dataset_analysis(self):
+        """Synchronous compatibility entry point; the UI uses the worker thread."""
+        dataframe = self.current_dataset
+        self.prepare_dataset_analysis()
         jobs = {
-
-            "profile": (self.profiler.profile, dataframe),
-            "statistics": (self.statistics.analyze, dataframe),
-            "missing_values": (self.missing_analyzer.analyze, dataframe),
-            "duplicates": (self.duplicate_analyzer.analyze, dataframe),
-            "outliers": (self.outlier_analyzer.analyze, dataframe),
-            "correlations": (self.correlation_analyzer.analyze, dataframe),
-            "fingerprint": (self.fingerprint_analyzer.generate, dataframe),
+            "profile": self.profiler.profile,
+            "statistics": self.statistics.analyze,
+            "missing_values": self.missing_analyzer.analyze,
+            "duplicates": self.duplicate_analyzer.analyze,
+            "outliers": self.outlier_analyzer.analyze,
+            "correlations": self.correlation_analyzer.analyze,
+            "fingerprint": self.fingerprint_analyzer.generate,
         }
-
-        # Independent analyzers are read-only against the same DataFrame, so
-        # they can run concurrently and reduce total Run Analysis latency.
+        started = time.perf_counter()
         try:
-            result = {}
-            with ThreadPoolExecutor(max_workers=min(7, len(jobs))) as executor:
-                futures = {
-                    name: executor.submit(func, frame)
-                    for name, (func, frame) in jobs.items()
-                }
-                for name, future in futures.items():
-                    result[name] = future.result()
-
-            # Stage 3: Data Quality Diagnosis (4 Pillars)
+            with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
+                futures = {name: executor.submit(fn, dataframe) for name, fn in jobs.items()}
+                result = {name: future.result() for name, future in futures.items()}
             try:
                 result["data_quality"] = self.quality_diagnoser.diagnose(
                     dataframe=dataframe,
@@ -8398,30 +9330,14 @@ class MainWindow(QMainWindow):
                     outliers=result.get("outliers"),
                     fingerprint=result.get("fingerprint"),
                 )
-            except Exception as dq_err:
-                print(f"Warning: create_initial_version (in-memory): {dq_err}")
+            except Exception as error:
+                print(f"Warning: data quality diagnosis failed: {error}")
                 result["data_quality"] = []
-
-            self.analysis_result = result
-            telemetry.track(
-                "analysis_completed",
-                feature_name="dataset_analysis",
-                status="completed",
-                duration_ms=int((datetime.now().timestamp() - analysis_started_at) * 1000),
-            )
+            self.complete_dataset_analysis(result, int((time.perf_counter() - started) * 1000))
+            return result
         except Exception:
-            telemetry.track(
-                "analysis_failed",
-                feature_name="dataset_analysis",
-                status="failed",
-                duration_ms=int((datetime.now().timestamp() - analysis_started_at) * 1000),
-            )
+            self.fail_dataset_analysis(int((time.perf_counter() - started) * 1000))
             raise
-
-        self.ml_page.update_dataset()
-        self.research_page.show_empty_state()
-
-        return result
 
 
 __all__ = [

@@ -4,6 +4,10 @@ cd /d "%~dp0"
 
 set "PYTHON=.venv\Scripts\python.exe"
 set "APP_NAME=Dataset Research"
+set "APP_VERSION=4.0.0"
+set "BUILD_DIR=build\installer-v4"
+set "PAYLOAD_DIR=hasil_compile\payload"
+set "INSTALLER=hasil_compile\DatasetResearch-v%APP_VERSION%-Setup.exe"
 set "ISCC="
 
 if not exist "%PYTHON%" (
@@ -12,45 +16,39 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-if not exist "app\ui\assets\logo.jpg" (
-    echo [ERROR] App logo not found: app\ui\assets\logo.jpg
-    exit /b 1
-)
-
 if not exist "installer\DatasetResearch.iss" (
     echo [ERROR] Installer definition not found: installer\DatasetResearch.iss
     exit /b 1
 )
 
-echo [0/4] Cleaning previous installer output...
-if exist build\installer rmdir /s /q build\installer
-if exist hasil_compile rmdir /s /q hasil_compile
-if not exist build mkdir build
-if not exist hasil_compile mkdir hasil_compile
+echo [0/4] Cleaning only the v4 build output...
+if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
+if exist "%PAYLOAD_DIR%" rmdir /s /q "%PAYLOAD_DIR%"
+if exist "%INSTALLER%" del /q "%INSTALLER%"
+mkdir "%BUILD_DIR%"
+mkdir "%PAYLOAD_DIR%"
 
-echo [1/4] Creating Windows application icon...
+echo [1/4] Creating the Windows application icon...
 "%PYTHON%" scripts\create_app_icon.py
 if errorlevel 1 exit /b 1
 
-echo [2/4] Building application with PyInstaller...
-"%PYTHON%" -m PyInstaller ^
-    --noconfirm ^
-    --clean ^
-    --onedir ^
-    --windowed ^
-    --name "%APP_NAME%" ^
-    --distpath "hasil_compile\payload" ^
-    --workpath "build\installer" ^
-    --specpath "build\installer" ^
-    --icon "%CD%\app\ui\assets\dataset_research.ico" ^
-    --paths "%CD%" ^
-    --add-data "%CD%\app\ui\assets\logo.jpg;app\ui\assets" ^
-    --add-data "%CD%\app\ui\assets\dataset_research.ico;app\ui\assets" ^
-    --add-data "%CD%\app\ui\app.qss;app\ui" ^
-    "app\main.py"
+echo [2/4] Building the optimized one-directory application...
+"%PYTHON%" -m PyInstaller --noconfirm --clean --distpath "%CD%\%PAYLOAD_DIR%" --workpath "%CD%\%BUILD_DIR%" "Dataset Research.spec"
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
     exit /b 1
+)
+
+if defined SIGN_CERT_SHA1 (
+    where signtool.exe >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] signtool.exe is not available. The application remains unsigned.
+        exit /b 1
+    )
+    signtool.exe sign /sha1 "%SIGN_CERT_SHA1%" /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 "%PAYLOAD_DIR%\%APP_NAME%\%APP_NAME%.exe"
+    if errorlevel 1 exit /b 1
+    signtool.exe verify /pa /v "%PAYLOAD_DIR%\%APP_NAME%\%APP_NAME%.exe"
+    if errorlevel 1 exit /b 1
 )
 
 echo [3/4] Locating Inno Setup compiler...
@@ -62,12 +60,11 @@ if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%P
 
 if not defined ISCC (
     echo [ERROR] Inno Setup 6 compiler ISCC.exe was not found.
-    echo Install Inno Setup 6 from https://jrsoftware.org/isdl.php
-    echo The application files are already available in hasil_compile\payload\%APP_NAME%\
+    echo The application files are available in %PAYLOAD_DIR%\%APP_NAME%\
     exit /b 1
 )
 
-echo [4/4] Compiling the Windows installer...
+echo [4/4] Compiling the v%APP_VERSION% installer...
 "%ISCC%" "installer\DatasetResearch.iss"
 if errorlevel 1 (
     echo [ERROR] Inno Setup compilation failed.
@@ -75,5 +72,24 @@ if errorlevel 1 (
 )
 
 echo.
-echo SUCCESS: installer created in hasil_compile\DatasetResearch-v3.0.0-Setup.exe
+echo SUCCESS: %INSTALLER%
+
+if defined SIGN_CERT_SHA1 (
+    echo [INFO] SIGN_CERT_SHA1 is set. Sign the installer with the configured code-signing certificate after packaging.
+    where signtool.exe >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] signtool.exe is not available. The installer remains unsigned.
+        exit /b 1
+    )
+    signtool.exe sign /sha1 "%SIGN_CERT_SHA1%" /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 "%INSTALLER%"
+    if errorlevel 1 (
+        echo [ERROR] Code signing failed. Check the certificate, private key access, and timestamp-server connection.
+        exit /b 1
+    )
+    signtool.exe verify /pa /v "%INSTALLER%"
+    if errorlevel 1 exit /b 1
+) else (
+    echo [NOTE] No SIGN_CERT_SHA1 was supplied. Windows may show SmartScreen for this unsigned installer.
+)
+
 exit /b 0

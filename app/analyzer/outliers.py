@@ -10,6 +10,10 @@ class OutlierAnalyzer:
         numeric_columns = dataframe.select_dtypes(
             include=["number"]
         ).columns
+        numeric_columns = [
+            column for column in numeric_columns
+            if not pd.api.types.is_bool_dtype(dataframe[column].dtype)
+        ]
 
         for column in numeric_columns:
             series = dataframe[column].dropna()

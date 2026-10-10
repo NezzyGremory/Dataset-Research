@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from app.storage.database import Database
@@ -40,8 +41,21 @@ class ProjectRepository:
         return json.dumps(
             value,
             ensure_ascii=False,
-            default=str,
+            default=ProjectRepository._json_default,
         )
+
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        """Convert dataclasses and common NumPy/Pandas values to JSON safely."""
+        if is_dataclass(value) and not isinstance(value, type):
+            return asdict(value)
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        if hasattr(value, "item"):
+            return value.item()
+        if isinstance(value, set):
+            return sorted(value, key=str)
+        return str(value)
 
     @staticmethod
     def _from_json(
@@ -196,6 +210,62 @@ class ProjectRepository:
                 project_id,
             ),
         )
+
+    def save_workflow_section(
+        self,
+        project_id: int,
+        section: str,
+        value: Any,
+    ) -> None:
+        """Persist one feature result locally, keyed by its dataset project."""
+        columns = {
+            "analysis": "analysis_result_json",
+            "ml_task": "ml_task_result_json",
+            "ml_methods": "ml_methods_result_json",
+            "research": "research_result_json",
+        }
+        column = columns.get(section)
+        if column is None:
+            raise ValueError(f"Bagian workflow tidak dikenal: {section}")
+        if not self.project_exists(project_id):
+            raise ValueError(f"Project dengan ID {project_id} tidak ditemukan.")
+
+        payload = self._json(value)
+        self.database.execute(
+            f"""
+            INSERT INTO project_workflows (project_id, {column})
+            VALUES (?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET
+                {column} = excluded.{column},
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (project_id, payload),
+        )
+        self.database.execute(
+            "UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (project_id,),
+        )
+
+    def get_workflow_state(self, project_id: int) -> dict[str, Any] | None:
+        """Load saved feature results for a project without loading its dataset."""
+        row = self.database.fetch_one(
+            """
+            SELECT analysis_result_json, ml_task_result_json,
+                   ml_methods_result_json, research_result_json, updated_at
+            FROM project_workflows
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        )
+        if row is None:
+            return None
+        return {
+            "analysis": self._from_json(row["analysis_result_json"], {}),
+            "ml_task": self._from_json(row["ml_task_result_json"], {}),
+            "ml_methods": self._from_json(row["ml_methods_result_json"], {}),
+            "research": self._from_json(row["research_result_json"], {}),
+            "updated_at": row["updated_at"],
+        }
 
     def delete_project(
         self,

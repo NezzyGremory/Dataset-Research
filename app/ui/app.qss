@@ -576,7 +576,8 @@ QPushButton {
 
 QTableWidget,
 QListWidget,
-QTextEdit {
+QTextEdit,
+QTextBrowser {
     background: #FFFFFF;
     border: 1px solid #e1e7ef;
     border-radius: 9px;
@@ -755,7 +756,6 @@ QToolTip {
 QFrame[frameShape="4"] {
     color: #e5e9ef;
 }
-
 
 /* ============================================================
    POLISHED UI OVERRIDES — LIGHT BLUE EDITION
@@ -1035,7 +1035,7 @@ QScrollBar::handle:horizontal { background: #C9D9EB; border-radius: 4px; }
 #researchCard QLabel { color: #53667D; }
 
 /* Keep long research text readable instead of visually collapsing it. */
-QTextEdit, QPlainTextEdit {
+QTextEdit, QTextBrowser, QPlainTextEdit {
     font-size: 12px;
     line-height: 1.45;
 }
@@ -1104,16 +1104,15 @@ QProgressBar::chunk {
    DASHBOARD CLEAN / COMPACT
    ============================================================ */
 #heroCard {
-    min-height: 0px;
-    max-height: 178px;
+    min-height: 196px;
 }
 #heroTitle {
-    font-size: 25px;
-    line-height: 1.08;
+    font-size: 24px;
+    line-height: 1.15;
 }
 #heroDescription {
-    font-size: 11px;
-    line-height: 1.35;
+    font-size: 12px;
+    line-height: 1.45;
 }
 #heroVisual {
     border-radius: 13px;
@@ -1128,33 +1127,35 @@ QProgressBar::chunk {
     font-size: 15px;
 }
 #quickActionCard {
-    min-height: 0px;
-    max-height: 104px;
+    min-height: 120px;
 }
 #quickActionCard #quickActionDescription {
-    font-size: 9px;
-    line-height: 1.25;
+    font-size: 11px;
+    line-height: 1.4;
 }
 #quickActionCard #quickActionTitle {
-    font-size: 11px;
+    font-size: 12px;
 }
 #quickActionCard #quickActionButton {
-    font-size: 9px;
+    font-size: 10px;
 }
 #currentDatasetCard {
-    min-height: 0px;
-    max-height: 72px;
+    min-height: 88px;
 }
 #statCard {
-    min-height: 0px;
+    min-height: 72px;
 }
 #pipelineCard {
-    min-height: 0px;
-    max-height: 68px;
+    min-height: 84px;
 }
 #pipelineStageCard {
-    min-height: 0px;
-    max-height: 54px;
+    min-height: 68px;
+}
+#pipelineTitle {
+    font-size: 11px;
+}
+#pipelineStatus {
+    font-size: 9px;
 }
 
 
@@ -1193,4 +1194,283 @@ QProgressBar::chunk {
 }
 #dashboardScroll {
     background: transparent;
+}
+
+#datasetsTabs {
+    background: transparent;
+}
+#datasetsTabs::pane {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 0 0 14px 14px;
+    top: -1px;
+}
+#datasetsTabs QTabBar::tab {
+    background: #F3F7FC;
+    border: 1px solid #E2EAF4;
+    border-bottom: none;
+    border-radius: 9px 9px 0 0;
+    color: #5D6C80;
+    min-width: 150px;
+    padding: 10px 16px;
+}
+#datasetsTabs QTabBar::tab:selected {
+    background: #FFFFFF;
+    border-color: #DCE8F7;
+    color: #2865B8;
+}
+
+
+/* Progress feedback for long-running analysis and model training. */
+#loadingSpinner {
+    color: #3478E5;
+    font-size: 23px;
+    font-weight: 700;
+}
+#loadingProgress {
+    background: #E8F0FC;
+    border: none;
+    border-radius: 3px;
+}
+#loadingProgress::chunk {
+    background: #4F8CFF;
+    border-radius: 3px;
+}
+
+#gapExplanationBody {
+    background: #F9FBFE;
+    border: 1px solid #E2EAF4;
+    border-radius: 8px;
+    color: #344158;
+    padding: 10px;
+}
+
+/* Dashboard arrangement follows the provided reference image. */
+#dashboardCanvas {
+    background: #F3F6FC;
+    font-family: "Segoe UI";
+    font-size: 12px;
+}
+
+#dashboardHero {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #2448D6, stop:1 #326CFA);
+    border: none;
+    border-radius: 20px;
+}
+
+#heroEyebrow { color: #E8EEFF; font-size: 11px; font-weight: 600; letter-spacing: 0.4px; }
+#datasetName { color: #FFFFFF; font-size: 24px; font-weight: 700; }
+#datasetDescription { color: #E3EAFF; font-size: 12px; }
+
+#datasetStatusBadge {
+    background: rgba(255,255,255,0.16);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 12px;
+    color: #FFFFFF;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 4px 9px;
+}
+
+#datasetStatusBadge[state="success"] {
+    background: rgba(17,184,166,0.2);
+    border-color: rgba(181,255,243,0.4);
+    color: #FFFFFF;
+}
+
+#dashboardHero #datasetStatusBadge[state="success"] {
+    background: rgba(17,184,166,0.2);
+    border-color: rgba(181,255,243,0.4);
+    color: #FFFFFF;
+}
+
+#heroMetricCard {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+}
+
+#heroMetricCard #statTitle { color: #E1E9FF; }
+#heroMetricCard #statValue { color: #FFFFFF; font-size: 25px; font-weight: 700; }
+#heroMetricCard #statDescription { color: #E1E9FF; font-size: 10px; }
+
+#dashboardCanvas #sectionTitle { color: #172541; font-size: 16px; font-weight: 650; }
+#dashboardCanvas #sectionDescription { color: #687A96; font-size: 12px; }
+
+#heroPrimaryButton,
+#heroSecondaryButton {
+    border-radius: 9px;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 16px;
+}
+#heroPrimaryButton {
+    background: #FFFFFF;
+    border: 1px solid #FFFFFF;
+    color: #2858DF;
+}
+#heroPrimaryButton:hover { background: #EEF3FF; }
+#heroPrimaryButton:disabled { color: #8B9AC0; }
+#heroSecondaryButton {
+    background: rgba(255,255,255,0.16);
+    border: 1px solid rgba(255,255,255,0.22);
+    color: #FFFFFF;
+}
+#heroSecondaryButton:hover { background: rgba(255,255,255,0.24); }
+
+#quickActionCard {
+    min-height: 96px;
+    background: #FFFFFF;
+    border: 1px solid #DCE6F3;
+    border-radius: 14px;
+}
+#quickActionCard:hover { border-color: #B8CCF3; background: #FCFDFF; }
+
+#quickActionIcon {
+    background: #EAF0FF;
+    border: none;
+    border-radius: 10px;
+    color: #3267F6;
+}
+
+#quickActionTitle { color: #172541; font-size: 14px; font-weight: 650; }
+#quickActionCard #quickActionTitle { color: #172541; font-size: 14px; font-weight: 650; }
+#quickActionDescription { color: #687A96; font-size: 12px; }
+#quickActionCard #quickActionDescription { color: #687A96; font-size: 12px; }
+#quickActionButton { color: #2858DF; }
+#dashboardCanvas #quickActionButton { font-family: "Segoe UI"; font-size: 12px; font-weight: 600; }
+
+#pipelineCard {
+    background: #FFFFFF;
+    border: 1px solid #E0E7F1;
+    border-radius: 15px;
+}
+
+#pipelineStageCard {
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    min-height: 92px;
+}
+
+#pipelineMarker {
+    background: #E8ECF4;
+    border: none;
+    border-radius: 14px;
+    color: #75829A;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+#pipelineMarker[state="active"] { background: #3267F6; color: #FFFFFF; }
+#pipelineMarker[state="success"] { background: #12B8A6; color: #FFFFFF; }
+#pipelineTitle { color: #172541; font-size: 12px; font-weight: 650; }
+#pipelineStatus { color: #8290A7; font-size: 10px; font-weight: 600; letter-spacing: 0; }
+#pipelineStatus[state="success"] { color: #0BA895; }
+#pipelineStatus[state="active"] { color: #3267F6; }
+#workflowConnector { background: #DDE4EF; border: none; }
+#workflowConnector[state="complete"] { background: #12B8A6; }
+
+#dashboardChartCard {
+    min-height: 202px;
+    background: #FFFFFF;
+    border: 1px solid #DCE6F3;
+    border-radius: 15px;
+}
+
+/* About page */
+#aboutPageTitle { color: #172033; font-size: 24px; font-weight: 700; }
+#aboutPageSubtitle { color: #718096; font-size: 12px; }
+#aboutHero {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #2448D6, stop:1 #326CFA);
+    border: none;
+    border-radius: 16px;
+}
+#aboutLogo { background: #FFFFFF; border-radius: 12px; }
+#aboutHeroTitle { color: #FFFFFF; font-size: 22px; font-weight: 700; }
+#aboutHero #aboutBody { color: #E3EAFF; font-size: 12px; }
+#aboutVersion { color: #E3EAFF; font-size: 11px; }
+#aboutInfoCard {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 13px;
+    min-height: 150px;
+}
+#aboutCardTitle { color: #20324A; font-size: 14px; font-weight: 650; }
+#aboutBody { color: #63748A; font-size: 12px; line-height: 1.5; }
+
+/* Dataset readiness summary */
+#readinessCard {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 13px;
+}
+#readinessTitle { color: #20324A; font-size: 15px; font-weight: 650; }
+#readinessStatus {
+    background: #EEF4FC;
+    border: 1px solid #DDE8F5;
+    border-radius: 10px;
+    color: #63748A;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 5px 10px;
+}
+#readinessStatus[state="success"] {
+    background: #EAF7F0;
+    border-color: #D3EFDF;
+    color: #25805A;
+}
+#readinessStatus[state="attention"] {
+    background: #FFF7E8;
+    border-color: #F4E1B9;
+    color: #93620B;
+}
+#readinessStatus[state="error"] {
+    background: #FFF0F0;
+    border-color: #F4D5D5;
+    color: #A64242;
+}
+#readinessStatus[state="active"] {
+    background: #EEF4FF;
+    border-color: #D8E4FF;
+    color: #3267C8;
+}
+#readinessMetric {
+    background: #F7FAFE;
+    border: 1px solid #E7EEF7;
+    border-radius: 9px;
+}
+#readinessMetricValue { color: #20324A; font-size: 13px; font-weight: 600; }
+#readinessMetricLabel { color: #8190A4; font-size: 10px; }
+#readinessRecommendation { color: #64748B; font-size: 11px; }
+
+/* Full, read-only spreadsheet view for the active local dataset. */
+#datasetPreviewHeader {
+    background: #FFFFFF;
+    border: 1px solid #DCE8F7;
+    border-radius: 12px;
+}
+#datasetPreviewTable {
+    background: #FFFFFF;
+    alternate-background-color: #F7FAFE;
+    border: 1px solid #DCE8F7;
+    border-radius: 10px;
+    color: #26364A;
+    gridline-color: #E8EEF6;
+    selection-background-color: #DCEAFF;
+    selection-color: #172033;
+}
+#datasetPreviewTable::item { padding: 5px 8px; }
+#datasetPreviewTable QHeaderView::section {
+    background: #F1F6FC;
+    border: none;
+    border-bottom: 1px solid #DCE8F7;
+    border-right: 1px solid #E5ECF5;
+    color: #42546B;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 7px 9px;
 }

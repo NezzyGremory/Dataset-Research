@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import html
+import math
+import re
 
 try:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -107,20 +109,22 @@ class ReportGenerator:
         duplicates = analysis_data.get("duplicates") or {}
         raw_quality = analysis_data.get("data_quality") or []
 
-        total_rows = int(profile.get("total_rows") or profile.get("row_count") or 0)
-        total_cols = int(profile.get("total_columns") or profile.get("column_count") or 0)
+        total_rows = int(profile.get("total_rows") or profile.get("row_count") or profile.get("rows") or 0)
+        total_cols = int(profile.get("total_columns") or profile.get("column_count") or profile.get("columns") or 0)
         memory_usage = profile.get("memory_usage_str") or profile.get("memory_usage") or "N/A"
         if isinstance(memory_usage, (int, float)):
             memory_usage = f"{memory_usage / (1024 * 1024):.2f} MB"
 
         # Missing values
-        total_cells = total_rows * total_cols if total_rows and total_cols else 1
+        total_cells = total_rows * total_cols
         missing_cells = 0
         if isinstance(missing_values, list):
             for m in missing_values:
                 missing_cells += int(m.get("missing_count", 0))
         elif isinstance(missing_values, dict):
             missing_cells = int(missing_values.get("total_missing", 0))
+        if not missing_cells:
+            missing_cells = int(profile.get("missing_values") or 0)
 
         missing_pct = round((missing_cells / total_cells) * 100, 2) if total_cells > 0 else 0.0
 
@@ -130,6 +134,8 @@ class ReportGenerator:
             if isinstance(duplicates, dict)
             else 0
         )
+        if not duplicate_count:
+            duplicate_count = int(profile.get("duplicate_rows") or 0)
 
         # Columns summary
         dtypes = profile.get("dtypes") or {}
@@ -161,6 +167,9 @@ class ReportGenerator:
                 "unique_count": "-",
                 "sample_val": "-",
             })
+        if not dtypes:
+            numeric_count = int(profile.get("numeric_columns") or 0)
+            cat_count = int(profile.get("categorical_columns") or 0)
 
         # Quality items
         quality_diagnoses = []
@@ -301,7 +310,7 @@ class ReportGenerator:
                 })
 
         # Research Context
-        research_executed = bool(research_data and research_data.get("papers"))
+        research_executed = bool(research_data and research_data.get("status") in {"SUCCESS", "PARTIAL"})
         domain_info = research_data.get("domain") or {}
         domain_name = domain_info.get("domain") or domain_info.get("primary_domain") or "Multidisciplinary / General"
 
@@ -339,16 +348,50 @@ class ReportGenerator:
         gaps_info = research_data.get("gaps") or {}
         research_gaps = []
         if isinstance(gaps_info, dict):
-            for k, v in gaps_info.items():
-                if isinstance(v, list):
-                    research_gaps.extend(str(item) for item in v)
-                elif isinstance(v, str) and v.strip():
-                    research_gaps.append(f"{k.replace('_', ' ').title()}: {v}")
+            gap_items = gaps_info.get("gaps") or gaps_info.get("potential_gaps") or gaps_info.get("items") or []
+            for item in gap_items:
+                if isinstance(item, dict):
+                    title = item.get("title") or item.get("gap") or item.get("type") or "Kandidat celah penelitian"
+                    description = item.get("description") or item.get("evidence") or ""
+                    research_gaps.append(f"{title}: {description}" if description else str(title))
+                else:
+                    research_gaps.append(str(item))
         elif isinstance(gaps_info, list):
-            research_gaps = [str(g) for g in gaps_info]
+            research_gaps = [
+                f"{item.get('title') or item.get('gap') or 'Kandidat celah penelitian'}: {item.get('description') or item.get('evidence') or ''}".rstrip(": ")
+                if isinstance(item, dict) else str(item)
+                for item in gaps_info
+            ]
+
+        gap_explanation = research_data.get("gap_explanation") or {}
+        if isinstance(gap_explanation, dict):
+            gap_explanation = gap_explanation.get("text") or ""
+        elif not isinstance(gap_explanation, str):
+            gap_explanation = ""
+        gap_explanation_lines = []
+        for line in str(gap_explanation).splitlines():
+            cleaned = re.sub(r"^\s*(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+)", "", line)
+            cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "").strip()
+            if cleaned:
+                gap_explanation_lines.append(cleaned)
+
+        landscape = research_data.get("landscape") or {}
+        trend = research_data.get("trend") or {}
+        method_distribution = landscape.get("methods") or [] if isinstance(landscape, dict) else []
+        if isinstance(method_distribution, dict):
+            method_distribution = [{"name": name, "percentage": value} for name, value in method_distribution.items()]
+        publication_trend = trend.get("publication_trend") or [] if isinstance(trend, dict) else []
 
         best_model_name = winner_model["method"] if winner_model else "Belum Dievaluasi"
         best_model_score = winner_model["primary_metric_display"] if winner_model else "Jalankan ML Intelligence"
+
+        chart_paths = self._build_charts(
+            dataframe=metadata.get("dataframe"),
+            analysis_data=analysis_data,
+            ml_data=ml_data,
+            research_data=research_data,
+            chart_dir=metadata.get("chart_dir"),
+        )
 
         return {
             "dataset_name": dataset_name,
@@ -379,9 +422,188 @@ class ReportGenerator:
             "research_domain": domain_name,
             "keywords_list": keywords_list,
             "research_gaps": research_gaps,
+            "gap_explanation": gap_explanation,
+            "gap_explanation_lines": gap_explanation_lines,
+            "method_distribution": method_distribution[:10],
+            "publication_trend": publication_trend[-15:],
+            "chart_paths": chart_paths,
             "papers_list": papers_list,
             "ai_synthesis": ai_synthesis,
         }
+
+    @staticmethod
+    def _build_charts(dataframe, analysis_data, ml_data, research_data, chart_dir) -> Dict[str, str]:
+        """Create local, aggregate-only chart images for the PDF report."""
+        if dataframe is None or not chart_dir:
+            return {}
+        try:
+            import numpy as np
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            from matplotlib.figure import Figure
+        except ImportError:
+            return {}
+
+        output_dir = Path(chart_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        charts: Dict[str, str] = {}
+
+        def save_figure(name: str, figure) -> None:
+            target = output_dir / name
+            FigureCanvasAgg(figure)
+            figure.savefig(target, dpi=170, bbox_inches="tight", facecolor="white")
+            charts[name.removesuffix(".png")] = name
+            figure.clear()
+
+        try:
+            numeric = dataframe.select_dtypes(include=["number"])
+            usable_columns = []
+            for name in numeric.columns:
+                normalized_name = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", str(name)).lower()
+                tokens = normalized_name.replace("-", "_").split("_")
+                if not any(token in {"id", "identifier"} for token in tokens):
+                    usable_columns.append(name)
+            visual_numeric = numeric.loc[:, usable_columns]
+            numeric_names = [str(name) for name in visual_numeric.columns]
+
+            # Histogram panels describe real numeric-column distributions.
+            histogram_columns = [name for name in visual_numeric.columns if visual_numeric[name].nunique(dropna=True) > 1][:4]
+            if histogram_columns:
+                figure = Figure(figsize=(8.0, 5.2), constrained_layout=True)
+                axes = figure.subplots(2, 2).ravel()
+                for index, axis in enumerate(axes):
+                    if index >= len(histogram_columns):
+                        axis.set_visible(False)
+                        continue
+                    column = histogram_columns[index]
+                    values = visual_numeric[column].replace([np.inf, -np.inf], np.nan).dropna()
+                    if len(values) > 100_000:
+                        values = values.sample(100_000, random_state=42)
+                    axis.hist(values, bins="fd", color="#3975c6", edgecolor="white")
+                    axis.set_title(str(column), fontsize=9)
+                    axis.set_ylabel("Frekuensi")
+                    axis.grid(axis="y", alpha=0.2)
+                figure.suptitle("Distribusi variabel numerik", fontsize=12)
+                save_figure("histograms.png", figure)
+
+            # Correlation heatmap, capped to keep a readable printed figure.
+            if len(numeric_names) >= 2:
+                stored_correlations = analysis_data.get("correlations")
+                selected_columns = visual_numeric.columns[:12]
+                if (
+                    hasattr(stored_correlations, "corr")
+                    and hasattr(stored_correlations, "columns")
+                    and all(column in stored_correlations.columns for column in selected_columns)
+                ):
+                    matrix = stored_correlations.loc[selected_columns, selected_columns]
+                else:
+                    selected = visual_numeric.loc[:, selected_columns].replace([np.inf, -np.inf], np.nan)
+                    if len(selected) > 50_000:
+                        selected = selected.sample(50_000, random_state=42)
+                    matrix = selected.corr()
+                if matrix.shape[0] >= 2:
+                    size = max(6.0, min(9.0, 0.55 * len(matrix) + 3.0))
+                    figure = Figure(figsize=(size, size * 0.82), constrained_layout=True)
+                    axis = figure.subplots()
+                    image = axis.imshow(matrix.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1)
+                    labels = [str(name) for name in matrix.columns]
+                    axis.set_xticks(range(len(labels)), labels=labels, rotation=45, ha="right", fontsize=8)
+                    axis.set_yticks(range(len(labels)), labels=labels, fontsize=8)
+                    for row in range(len(labels)):
+                        for col in range(len(labels)):
+                            value = matrix.iloc[row, col]
+                            if math.isfinite(float(value)):
+                                axis.text(col, row, f"{value:.2f}", ha="center", va="center", fontsize=7)
+                    figure.colorbar(image, ax=axis, shrink=0.78, label="Korelasi Pearson")
+                    axis.set_title("Korelasi antarvariabel numerik", fontsize=11)
+                    save_figure("correlation.png", figure)
+
+            # Missing-value bars from the analyzed dataset itself.
+            missing_rows = analysis_data.get("missing_values") or []
+            if isinstance(missing_rows, list) and missing_rows:
+                missing = {
+                    str(item.get("column")): int(item.get("missing_count", 0))
+                    for item in missing_rows if isinstance(item, dict)
+                }
+                missing = {name: count for name, count in missing.items() if count > 0}
+                missing = dict(sorted(missing.items(), key=lambda item: item[1], reverse=True)[:12])
+            else:
+                missing = dataframe.isna().sum().sort_values(ascending=False)
+                missing = missing[missing > 0].head(12)
+                missing = {str(name): int(count) for name, count in missing.items()}
+            if missing:
+                missing_names = list(missing)
+                missing_counts = np.asarray(list(missing.values()), dtype=float)
+                percentages = missing_counts / max(1, len(dataframe)) * 100
+                figure = Figure(figsize=(8.0, 4.2), constrained_layout=True)
+                axis = figure.subplots()
+                positions = np.arange(len(missing_names))
+                axis.barh(positions, percentages, color="#d88945")
+                axis.set_yticks(positions, labels=missing_names, fontsize=8)
+                axis.invert_yaxis()
+                axis.set_xlabel("Persentase nilai kosong (%)")
+                axis.set_title("Nilai kosong per variabel", fontsize=11)
+                axis.grid(axis="x", alpha=0.2)
+                save_figure("missing_values.png", figure)
+
+            # Compare models only when a common numeric metric is available.
+            evaluation = ml_data.get("evaluation") or {}
+            model_rows = evaluation.get("results") or []
+            metric_order = ("accuracy", "f1_macro", "f1_score", "r2", "r2_score", "silhouette", "silhouette_score", "rmse", "mae")
+            metric_name = next((
+                key for key in metric_order
+                if model_rows and all(isinstance(row.get("metrics", {}).get(key), (int, float)) for row in model_rows)
+            ), None)
+            if metric_name:
+                labels = [str(row.get("method") or row.get("method_id") or "Model") for row in model_rows]
+                scores = [float(row["metrics"][metric_name]) for row in model_rows]
+                figure = Figure(figsize=(8.0, max(3.2, min(7.0, 0.42 * len(labels) + 1.5))), constrained_layout=True)
+                axis = figure.subplots()
+                positions = np.arange(len(labels))
+                axis.barh(positions, scores, color="#4c87c9")
+                axis.set_yticks(positions, labels=labels, fontsize=8)
+                axis.invert_yaxis()
+                axis.set_xlabel(metric_name.replace("_", " ").title())
+                axis.set_title("Perbandingan hasil evaluasi model", fontsize=11)
+                axis.grid(axis="x", alpha=0.2)
+                save_figure("model_comparison.png", figure)
+
+            # Research charts come only from papers that were actually found.
+            trend = (research_data.get("trend") or {}).get("publication_trend") or []
+            if trend:
+                years = [str(item.get("year")) for item in trend if item.get("year") is not None]
+                counts = [int(item.get("paper_count", 0)) for item in trend if item.get("year") is not None]
+                if years:
+                    figure = Figure(figsize=(8.0, 3.8), constrained_layout=True)
+                    axis = figure.subplots()
+                    axis.bar(years, counts, color="#56866a")
+                    axis.set_ylabel("Jumlah paper")
+                    axis.set_title("Jumlah publikasi per tahun", fontsize=11)
+                    axis.tick_params(axis="x", rotation=35, labelsize=8)
+                    axis.grid(axis="y", alpha=0.2)
+                    save_figure("publication_trend.png", figure)
+
+            landscape = research_data.get("landscape") or {}
+            methods = landscape.get("methods") or []
+            if isinstance(methods, list) and methods:
+                methods = [item for item in methods if isinstance(item, dict) and item.get("name")]
+                methods = methods[:10]
+                if methods:
+                    figure = Figure(figsize=(8.0, max(3.2, min(6.0, 0.38 * len(methods) + 1.4))), constrained_layout=True)
+                    axis = figure.subplots()
+                    names = [str(item["name"]) for item in methods]
+                    values = [float(item.get("percentage", item.get("count", 0)) or 0) for item in methods]
+                    positions = np.arange(len(names))
+                    axis.barh(positions, values, color="#8b6eae")
+                    axis.set_yticks(positions, labels=names, fontsize=8)
+                    axis.invert_yaxis()
+                    axis.set_xlabel("Persentase paper (%)" if any("percentage" in item for item in methods) else "Jumlah paper")
+                    axis.set_title("Distribusi metode pada literatur", fontsize=11)
+                    axis.grid(axis="x", alpha=0.2)
+                    save_figure("research_methods.png", figure)
+        except Exception as exc:
+            print(f"Warning: report charts could not be generated: {exc}")
+
+        return charts
 
     def _generate_fallback_html(self, ctx: Dict[str, Any]) -> str:
         """Lightweight HTML generator when Jinja2 is unavailable."""
@@ -396,7 +618,7 @@ class ReportGenerator:
 <meta charset="utf-8">
 <title>{dataset_name} - Research Report</title>
 <style>
-body {{ font-family: Segoe UI, sans-serif; background: #f8fafc; color: #1e293b; padding: 30px; }}
+body {{ font-family: 'Times New Roman', Times, serif; background: #ffffff; color: #1e293b; padding: 30px; }}
 .card {{ background: white; padding: 24px; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: 20px; }}
 h1 {{ color: #1e3a8a; }}
 </style>
@@ -409,4 +631,3 @@ h1 {{ color: #1e3a8a; }}
 </div>
 </body>
 </html>"""
-

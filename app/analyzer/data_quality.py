@@ -152,7 +152,10 @@ class DataQualityDiagnoser:
                 if c_count > 0:
                     outlier_cols.append((c_name, c_count, c_pct))
         else:
-            num_cols = dataframe.select_dtypes(include=["number"]).columns
+            num_cols = [
+                column for column in dataframe.select_dtypes(include=["number"]).columns
+                if not pd.api.types.is_bool_dtype(dataframe[column].dtype)
+            ]
             for col in num_cols:
                 series = dataframe[col].dropna()
                 if len(series) > 0:

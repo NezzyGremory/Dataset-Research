@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import pandas as pd
-from PySide6.QtCore import QObject, QThread, Qt, Signal, QUrl
+from PySide6.QtCore import QObject, QThread, Qt, Signal, QUrl, QTimer, QStandardPaths
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -27,7 +27,6 @@ from app.dataset_search.huggingface import (
     HuggingFaceDatasetClient,
 )
 from app.dataset_search.kaggle import KaggleDatasetClient
-from app.core.config import get_data_dir
 
 
 class DatasetSearchWorker(QObject):
@@ -142,15 +141,15 @@ class DatasetSearchPage(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(35, 30, 35, 30)
-        root.setSpacing(18)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(14)
 
-        title = QLabel("Dataset Search")
+        title = QLabel("Find a dataset online")
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Cari dataset publik secara real-time dari Hugging Face Hub & Kaggle, "
-            "lihat format file, lalu unduh langsung ke workspace Dataset Research."
+            "Cari dataset publik di Hugging Face atau Kaggle, lalu unduh ke workspace "
+            "untuk dianalisis."
         )
         subtitle.setObjectName("pageSubtitle")
         subtitle.setWordWrap(True)
@@ -176,10 +175,12 @@ class DatasetSearchPage(QWidget):
 
         self.source_combo = QComboBox()
         self.source_combo.setMinimumHeight(44)
-        self.source_combo.setMinimumWidth(165)
-        self.source_combo.addItem("Semua Sumber (HF + Kaggle)", "all")
-        self.source_combo.addItem("Kaggle Datasets", "kaggle")
-        self.source_combo.addItem("Hugging Face Hub", "huggingface")
+        self.source_combo.setMinimumWidth(145)
+        self.source_combo.setObjectName("datasetProviderCombo")
+        self.source_combo.setToolTip("All providers mencari di Kaggle dan Hugging Face sekaligus.")
+        self.source_combo.addItem("All providers", "all")
+        self.source_combo.addItem("Kaggle", "kaggle")
+        self.source_combo.addItem("Hugging Face", "huggingface")
 
         self.search_button = QPushButton("Search")
         self.search_button.setObjectName("primaryButton")
@@ -193,11 +194,26 @@ class DatasetSearchPage(QWidget):
         search_layout.addLayout(row)
 
         self.status_label = QLabel(
-            "Pilih sumber (Hugging Face / Kaggle / Semua), masukkan keyword lalu tekan Search."
+            "Cari di All providers atau pilih Kaggle maupun Hugging Face. Unduhan tersimpan di folder Downloads laptop ini."
         )
         self.status_label.setObjectName("cardDescription")
         self.status_label.setWordWrap(True)
         search_layout.addWidget(self.status_label)
+
+        download_location = QHBoxLayout()
+        location_label = QLabel("Lokasi unduhan")
+        location_label.setObjectName("cardDescription")
+        self.download_path_label = QLabel(str(self._download_directory()))
+        self.download_path_label.setObjectName("cardDescription")
+        self.download_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.download_path_label.setWordWrap(True)
+        open_downloads_button = QPushButton("Buka folder")
+        open_downloads_button.setObjectName("secondaryButton")
+        open_downloads_button.clicked.connect(self._open_download_directory)
+        download_location.addWidget(location_label)
+        download_location.addWidget(self.download_path_label, 1)
+        download_location.addWidget(open_downloads_button)
+        search_layout.addLayout(download_location)
 
         hint = QLabel(
             "Mendukung pencarian dataset global & lokal. "
@@ -512,7 +528,7 @@ class DatasetSearchPage(QWidget):
             QMessageBox.information(
                 self,
                 "Download Berhasil",
-                "Dataset berhasil diunduh ke:\n\n"
+                "Dataset berhasil disimpan di folder Downloads:\n\n"
                 f"{file_path}",
             )
             return
@@ -523,9 +539,10 @@ class DatasetSearchPage(QWidget):
             self.main_window.current_file_path = str(file_path)
             self.main_window.update_dataset_state()
             self.status_label.setText(
-                f"Dataset berhasil diunduh dan dimuat: {Path(file_path).name}"
+                f"Dataset tersimpan di Downloads dan dimuat untuk analisis:\n{file_path}"
             )
             self.main_window.open_analysis_page()
+            QTimer.singleShot(150, self.main_window.analysis_page.run_analysis)
         except Exception as exc:
             QMessageBox.warning(
                 self,
@@ -579,9 +596,21 @@ class DatasetSearchPage(QWidget):
         )
 
     def _download_directory(self) -> Path:
-        destination = get_data_dir() / "downloads"
+        downloads_location = QStandardPaths.writableLocation(
+            QStandardPaths.DownloadLocation
+        )
+        destination = (
+            Path(downloads_location)
+            if downloads_location
+            else Path.home() / "Downloads"
+        )
+        destination = destination / "Dataset Research"
         destination.mkdir(parents=True, exist_ok=True)
         return destination
+
+    def _open_download_directory(self):
+        destination = self._download_directory()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(destination)))
 
     def _clear_results(self):
         while self.results_layout.count():
