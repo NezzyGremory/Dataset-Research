@@ -133,4 +133,5 @@ class CrossrefClient:
             source="Crossref",
             external_id=item.get("URL"),
             keywords=[],
+            issn=item.get("ISSN", []) or [],
         )

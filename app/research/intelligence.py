@@ -1023,6 +1023,7 @@ class ResearchIntelligenceEngine:
                         ),
                         external_id=item.get("external_id"),
                         keywords=keywords,
+                        issn=item.get("issn", []) or [],
                     )
                 )
             except Exception:
@@ -1056,6 +1057,7 @@ class ResearchIntelligenceEngine:
             "source": getattr(paper, "source", "unknown"),
             "external_id": getattr(paper, "external_id", None),
             "keywords": getattr(paper, "keywords", []),
+            "issn": getattr(paper, "issn", []),
         }
 
     # =========================================================

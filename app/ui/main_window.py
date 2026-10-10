@@ -2,19 +2,22 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from html import escape as html_escape
+from html.parser import HTMLParser
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import sys
 import tempfile
 import time
 from typing import Any, Dict
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 import pandas as pd
+import httpx
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import Qt, QUrl, QObject, QThread, QTimer, Signal, QMarginsF
-from PySide6.QtGui import QIcon, QPixmap, QDesktopServices, QTextDocument, QFont, QPageSize, QPageLayout
+from PySide6.QtCore import Qt, QUrl, QObject, QThread, QTimer, Signal, Slot, QMarginsF
+from PySide6.QtGui import QIcon, QPixmap, QDesktopServices, QTextDocument, QFont, QColor, QPageSize, QPageLayout
 from PySide6.QtPrintSupport import QPrinter
 from PySide6.QtWidgets import (
     QApplication,
@@ -214,6 +217,97 @@ class AcademicResearchWorker(QObject):
             self.finished.emit(result, ml_result)
         except Exception as error:
             self.failed.emit(str(error))
+
+
+class SintaLookupWorker(QObject):
+    """Look up a journal in the official SINTA directory without blocking Qt."""
+
+    finished = Signal(int, str, object)
+    failed = Signal(str)
+
+    def __init__(self, query: str, issn: str, paper_year: str, paper_index: int, paper_identity: str):
+        super().__init__()
+        self.query = query
+        self.issn = re.sub(r"[^0-9Xx]", "", issn).upper()
+        self.paper_year = str(paper_year or "")
+        self.paper_index = paper_index
+        self.paper_identity = paper_identity
+
+    def run(self):
+        try:
+            url = "https://sinta.kemdiktisaintek.go.id/journals/?q=" + quote_plus(self.query)
+            with httpx.Client(
+                timeout=httpx.Timeout(12.0, connect=5.0),
+                follow_redirects=True,
+                headers={"User-Agent": "DatasetResearch/4.0 (journal accreditation lookup)"},
+            ) as client:
+                response = client.get(url)
+                response.raise_for_status()
+            parser = _SintaTextParser()
+            parser.feed(response.text)
+            lines = parser.lines()
+
+            match_index = None
+            if self.issn:
+                for index, line in enumerate(lines):
+                    line_issns = re.findall(r"(?:P-ISSN|E-ISSN)\s*:\s*([0-9Xx-]+)", line, re.I)
+                    normalized = [re.sub(r"[^0-9Xx]", "", value).upper() for value in line_issns]
+                    if self.issn in normalized:
+                        match_index = index
+                        break
+
+            if match_index is None and not self.issn:
+                wanted = re.sub(r"[^a-z0-9]", "", self.query.casefold())
+                for index, line in enumerate(lines):
+                    candidate = re.sub(r"[^a-z0-9]", "", line.casefold())
+                    if len(wanted) >= 8 and candidate == wanted:
+                        match_index = index
+                        break
+
+            if match_index is None:
+                self.finished.emit(self.paper_index, self.paper_identity, {"found": False, "url": url, "query": self.query})
+                return
+
+            # SINTA ranks a journal and publishes the current directory status.
+            # We deliberately leave historical period matching to the user.
+            context = " ".join(lines[match_index:match_index + 8])
+            rank_match = re.search(r"\bS([1-6])\s+Accredited\b", context, re.I)
+            rank = f"S{rank_match.group(1)}" if rank_match else None
+            self.finished.emit(self.paper_index, self.paper_identity, {
+                "found": True,
+                "rank": rank,
+                "journal": lines[max(0, match_index - 3)] if match_index else self.query,
+                "url": url,
+                "query": self.query,
+                "issn_match": bool(self.issn),
+                "paper_year": self.paper_year,
+            })
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class _SintaTextParser(HTMLParser):
+    """Extract visible directory text into short lines for conservative matching."""
+
+    _BLOCK_TAGS = {"br", "p", "div", "article", "li", "h1", "h2", "h3", "h4"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag.lower() in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+    def lines(self):
+        return [line.strip() for line in " ".join(self.parts).splitlines() if line.strip()]
 
 
 class ResearchGapExplanationWorker(QObject):
@@ -5344,8 +5438,14 @@ class ResearchPage(QWidget):
         self.task_detector = MLTaskDetector()
 
         self.research_result: Dict[str, Any] = {}
+        self._all_papers = []
+        self._all_paper_result_indices = []
+        self.filtered_paper_indices = []
         self._research_thread: QThread | None = None
         self._research_worker: AcademicResearchWorker | None = None
+        self._sinta_thread: QThread | None = None
+        self._sinta_worker: SintaLookupWorker | None = None
+        self._sinta_lookup_cache = {}
 
         self._build_ui()
 
@@ -5794,21 +5894,51 @@ class ResearchPage(QWidget):
             True
         )
 
-        self.paper_table = QTableWidget()
+        filter_panel = QFrame()
+        filter_panel.setObjectName("paperScreeningToolbar")
+        toolbar = QHBoxLayout(filter_panel)
+        toolbar.setContentsMargins(12, 10, 12, 10)
+        toolbar.setSpacing(10)
 
-        self.paper_table.setColumnCount(
-            7
+        self.paper_search_input = QLineEdit()
+        self.paper_search_input.setPlaceholderText(
+            "Search title, author, venue, or ISSN"
         )
+        self.paper_search_input.setMinimumHeight(38)
+        self.paper_search_input.textChanged.connect(self._apply_paper_filter)
+        toolbar.addWidget(self.paper_search_input, 1)
+
+        filter_label = QLabel("SINTA status")
+        filter_label.setObjectName("cardDescription")
+        toolbar.addWidget(filter_label)
+
+        self.sinta_filter = QComboBox()
+        self.sinta_filter.setMinimumHeight(38)
+        self.sinta_filter.addItem("All papers", "ALL")
+        self.sinta_filter.addItem("Needs screening", "UNVERIFIED")
+        for rank in range(1, 7):
+            self.sinta_filter.addItem(f"SINTA {rank}", f"S{rank}")
+        self.sinta_filter.addItem("Not accredited", "NOT_ACCREDITED")
+        self.sinta_filter.addItem("Not listed in SINTA", "NOT_IN_SINTA")
+        self.sinta_filter.currentIndexChanged.connect(self._apply_paper_filter)
+        toolbar.addWidget(self.sinta_filter)
+
+        self.paper_count_label = QLabel("0 papers")
+        self.paper_count_label.setObjectName("topbarStatus")
+        toolbar.addWidget(self.paper_count_label)
+
+        self.paper_table = QTableWidget()
+        self.paper_table.setObjectName("rankedPapersTable")
+
+        self.paper_table.setColumnCount(5)
 
         self.paper_table.setHorizontalHeaderLabels(
             [
-                "#",
                 "Paper",
                 "Year",
                 "Relevance",
-                "Dataset",
-                "Schema",
-                "Usage Confidence",
+                "Venue",
+                "SINTA Status",
             ]
         )
 
@@ -5830,12 +5960,12 @@ class ResearchPage(QWidget):
 
         header.setSectionResizeMode(
             0,
-            QHeaderView.ResizeToContents,
+            QHeaderView.Stretch,
         )
 
         header.setSectionResizeMode(
             1,
-            QHeaderView.Stretch,
+            QHeaderView.ResizeToContents,
         )
 
         header.setSectionResizeMode(
@@ -5847,21 +5977,9 @@ class ResearchPage(QWidget):
             3,
             QHeaderView.ResizeToContents,
         )
-
-        header.setSectionResizeMode(
-            4,
-            QHeaderView.ResizeToContents,
-        )
-
-        header.setSectionResizeMode(
-            5,
-            QHeaderView.ResizeToContents,
-        )
-
-        header.setSectionResizeMode(
-            6,
-            QHeaderView.ResizeToContents,
-        )
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.paper_table.verticalHeader().setDefaultSectionSize(34)
+        self.paper_table.verticalHeader().setVisible(False)
 
         self.paper_table.itemSelectionChanged.connect(
             self._show_selected_paper
@@ -5870,11 +5988,79 @@ class ResearchPage(QWidget):
         self.paper_detail = QTextBrowser()
         self.paper_detail.setOpenExternalLinks(True)
         self.paper_detail.setReadOnly(True)
-        self.paper_detail.setMinimumHeight(220)
-
-        self.paper_detail.setMaximumHeight(
-            190
+        self.paper_detail.setMinimumHeight(92)
+        self.paper_detail.setMaximumHeight(140)
+        self.paper_detail.document().setDefaultStyleSheet(
+            "body { font-family: 'Segoe UI'; font-size: 9pt; color: #25364D; } "
+            "h2 { font-size: 11pt; margin: 2px 0 5px; } "
+            "p { margin: 2px 0; } h3 { font-size: 9pt; margin: 4px 0 2px; }"
         )
+
+        self.sinta_screening_panel = QFrame()
+        self.sinta_screening_panel.setObjectName("sintaScreeningPanel")
+        screening_layout = QVBoxLayout(self.sinta_screening_panel)
+        screening_layout.setContentsMargins(14, 10, 14, 10)
+        screening_layout.setSpacing(6)
+
+        screening_heading = QLabel("Journal accreditation screening")
+        screening_heading.setObjectName("sectionTitle")
+        screening_note = QLabel(
+            "Check the journal in the official SINTA directory inside this app. Confirm its accreditation period for the paper year before saving."
+        )
+        screening_note.setObjectName("cardDescription")
+        screening_note.setWordWrap(True)
+        screening_layout.addWidget(screening_heading)
+        screening_layout.addWidget(screening_note)
+
+        screening_controls = QHBoxLayout()
+        screening_controls.setSpacing(8)
+        status_label = QLabel("Rank for paper year")
+        status_label.setObjectName("cardDescription")
+        screening_controls.addWidget(status_label)
+
+        self.sinta_status_combo = QComboBox()
+        self.sinta_status_combo.addItem("Select after checking period", "UNVERIFIED")
+        for rank in range(1, 7):
+            self.sinta_status_combo.addItem(f"SINTA {rank}", f"S{rank}")
+        self.sinta_status_combo.addItem(
+            "Not accredited for paper year", "NOT_ACCREDITED"
+        )
+        self.sinta_status_combo.addItem(
+            "Outside SINTA / not listed", "NOT_IN_SINTA"
+        )
+        self.sinta_status_combo.setMinimumHeight(36)
+        self.sinta_status_combo.currentIndexChanged.connect(
+            self._update_sinta_save_enabled
+        )
+        screening_controls.addWidget(self.sinta_status_combo, 1)
+
+        self.check_sinta_button = QPushButton("Check SINTA")
+        self.check_sinta_button.setObjectName("secondaryButton")
+        self.check_sinta_button.setMinimumHeight(36)
+        self.check_sinta_button.clicked.connect(self._check_sinta_in_app)
+        screening_controls.addWidget(self.check_sinta_button)
+
+        self.save_sinta_button = QPushButton("Save screening")
+        self.save_sinta_button.setObjectName("primaryButton")
+        self.save_sinta_button.setMinimumHeight(36)
+        self.save_sinta_button.setEnabled(False)
+        self.save_sinta_button.clicked.connect(self._save_sinta_screening)
+        screening_controls.addWidget(self.save_sinta_button)
+        screening_layout.addLayout(screening_controls)
+
+        self.sinta_lookup_progress = QProgressBar()
+        self.sinta_lookup_progress.setRange(0, 0)
+        self.sinta_lookup_progress.setTextVisible(False)
+        self.sinta_lookup_progress.setMaximumHeight(5)
+        self.sinta_lookup_progress.setVisible(False)
+        screening_layout.addWidget(self.sinta_lookup_progress)
+
+        self.sinta_lookup_message = QLabel(
+            "Select a paper and check its journal using ISSN or journal title."
+        )
+        self.sinta_lookup_message.setObjectName("cardDescription")
+        self.sinta_lookup_message.setWordWrap(True)
+        screening_layout.addWidget(self.sinta_lookup_message)
 
         layout.addWidget(
             title
@@ -5884,6 +6070,8 @@ class ResearchPage(QWidget):
             description
         )
 
+        layout.addWidget(filter_panel)
+
         layout.addWidget(
             self.paper_table,
             1,
@@ -5892,6 +6080,8 @@ class ResearchPage(QWidget):
         layout.addWidget(
             self.paper_detail
         )
+
+        layout.addWidget(self.sinta_screening_panel)
 
         return widget
 
@@ -6090,6 +6280,9 @@ class ResearchPage(QWidget):
     def show_empty_state(self):
 
         self.research_result = {}
+        self._all_papers = []
+        self._all_paper_result_indices = []
+        self.filtered_paper_indices = []
 
         self.run_button.setEnabled(
             True
@@ -6164,6 +6357,14 @@ class ResearchPage(QWidget):
         )
 
         self.paper_detail.clear()
+        self.paper_count_label.setText("0 papers | 0 need screening")
+        self.sinta_status_combo.setCurrentIndex(0)
+        self.save_sinta_button.setEnabled(False)
+        self.check_sinta_button.setEnabled(False)
+        self.sinta_lookup_progress.setVisible(False)
+        self.sinta_lookup_message.setText(
+            "Select a paper and check its journal using ISSN or journal title."
+        )
 
         self.landscape_text.clear()
 
@@ -6799,14 +7000,78 @@ class ResearchPage(QWidget):
         self,
         papers,
     ):
+        if not isinstance(papers, list):
+            papers = []
+        self._all_paper_result_indices = [
+            index for index, paper in enumerate(papers) if isinstance(paper, dict)
+        ]
+        self._all_papers = [papers[index] for index in self._all_paper_result_indices]
+        self._apply_paper_filter()
 
-        self.paper_table.setRowCount(
-            len(papers)
-        )
+    @staticmethod
+    def _sinta_screening(paper):
+        screening = paper.get("sinta_screening", {})
+        return screening if isinstance(screening, dict) else {}
 
-        for row, paper in enumerate(
-            papers
-        ):
+    @classmethod
+    def _sinta_status_label(cls, paper):
+        status = str(cls._sinta_screening(paper).get("status") or "UNVERIFIED")
+        labels = {
+            "UNVERIFIED": "Needs screening",
+            "NOT_ACCREDITED": "Not accredited",
+            "NOT_IN_SINTA": "Not listed in SINTA",
+        }
+        if status in {f"S{rank}" for rank in range(1, 7)}:
+            return f"SINTA {status[1:]}"
+        return labels.get(status, "Needs screening")
+
+    def _apply_paper_filter(self, *_):
+        papers = getattr(self, "_all_papers", [])
+        result_indices = getattr(self, "_all_paper_result_indices", [])
+        query = self.paper_search_input.text().strip().casefold()
+        selected_status = self.sinta_filter.currentData()
+        self.filtered_paper_indices = []
+
+        for index, paper in zip(result_indices, papers):
+            screening = self._sinta_screening(paper)
+            status = str(screening.get("status") or "UNVERIFIED")
+            if selected_status == "UNVERIFIED" and status != "UNVERIFIED":
+                continue
+            if selected_status not in {None, "ALL", "UNVERIFIED"} and status != selected_status:
+                continue
+
+            authors = paper.get("authors", [])
+            keywords = paper.get("keywords", [])
+            issn = paper.get("issn", [])
+            searchable_parts = [
+                paper.get("title", ""),
+                paper.get("venue", ""),
+                paper.get("doi", ""),
+                paper.get("source", ""),
+                paper.get("year", ""),
+                *(authors if isinstance(authors, list) else [authors]),
+                *(keywords if isinstance(keywords, list) else [keywords]),
+                *(issn if isinstance(issn, list) else [issn]),
+            ]
+            searchable = " ".join(str(part or "") for part in searchable_parts).casefold()
+            if query and query not in searchable:
+                continue
+            self.filtered_paper_indices.append(index)
+
+        self._render_filtered_papers()
+
+    def _render_filtered_papers(self):
+        papers = self.research_result.get("papers", [])
+        if not isinstance(papers, list):
+            papers = []
+        selected_paper_index = self._selected_paper_index()
+        self.paper_table.setSortingEnabled(False)
+        self.paper_table.setRowCount(len(self.filtered_paper_indices))
+
+        for row, paper_index in enumerate(self.filtered_paper_indices):
+            if paper_index >= len(papers) or not isinstance(papers[paper_index], dict):
+                continue
+            paper = papers[paper_index]
 
             title = paper.get(
                 "title",
@@ -6821,44 +7086,19 @@ class ResearchPage(QWidget):
                 "relevance_score"
             )
 
-            breakdown = paper.get(
-                "score_breakdown",
-                {}
-            )
-
-            dataset_score = (
-                breakdown.get(
-                    "dataset_name",
-                    0,
-                )
-            )
-
-            schema_score = (
-                breakdown.get(
-                    "schema",
-                    0,
-                )
-            )
-
-            confidence = paper.get(
-                "dataset_usage_confidence",
-                "UNKNOWN",
-            )
+            sinta_label = self._sinta_status_label(paper)
+            venue = str(paper.get("venue") or paper.get("source") or "-")
+            if len(venue) > 42:
+                venue = venue[:39].rstrip() + "..."
 
             values = [
-                str(row + 1),
                 str(title),
                 str(year or "-"),
                 self._format_score(
                     relevance
                 ),
-                self._format_score(
-                    dataset_score
-                ),
-                self._format_score(
-                    schema_score
-                ),
-                str(confidence),
+                venue,
+                sinta_label,
             ]
 
             for column, value in enumerate(
@@ -6869,8 +7109,26 @@ class ResearchPage(QWidget):
                     value
                 )
 
+                if column == 0:
+                    item.setData(Qt.UserRole, paper_index)
+
+                if column == 3:
+                    item.setToolTip(str(paper.get("venue") or paper.get("source") or "Venue unavailable"))
+
+                if column == 4:
+                    screening = self._sinta_screening(paper)
+                    status = str(screening.get("status") or "UNVERIFIED")
+                    color = (
+                        "#19836F" if status in {f"S{rank}" for rank in range(1, 7)}
+                        else "#9A6A18" if status == "NOT_ACCREDITED"
+                        else "#718096" if status == "UNVERIFIED"
+                        else "#58677D"
+                    )
+                    item.setForeground(QColor(color))
+                    item.setToolTip(screening.get("source_url") or "Check this journal from the screening panel below.")
+
                 item.setToolTip(
-                    str(value)
+                    item.toolTip() or str(value)
                 )
 
                 self.paper_table.setItem(
@@ -6881,6 +7139,33 @@ class ResearchPage(QWidget):
 
         self.paper_table.resizeRowsToContents()
 
+        verified_count = sum(
+            bool(self._sinta_screening(paper).get("status"))
+            and self._sinta_screening(paper).get("status") != "UNVERIFIED"
+            for paper in self._all_papers
+        )
+        self.paper_count_label.setText(
+            f"{len(self.filtered_paper_indices)} of {len(self._all_papers)} papers | "
+            f"{len(self._all_papers) - verified_count} need screening"
+        )
+
+        if self.filtered_paper_indices:
+            selected_row = 0
+            if selected_paper_index in self.filtered_paper_indices:
+                selected_row = self.filtered_paper_indices.index(selected_paper_index)
+            self.paper_table.selectRow(selected_row)
+        else:
+            if not self._all_papers:
+                self.paper_detail.setPlainText(
+                    "No literature records were found for this dataset yet. "
+                    "Academic Research searches using the dataset's research topic and column metadata; "
+                    "it does not require the private dataset itself to have been published before."
+                )
+            else:
+                self.paper_detail.setPlainText("No papers match this search or SINTA filter.")
+            self.save_sinta_button.setEnabled(False)
+            self.check_sinta_button.setEnabled(False)
+
     # =========================================================
     # PAPER DETAIL
     # =========================================================
@@ -6889,12 +7174,39 @@ class ResearchPage(QWidget):
         rows = self.paper_table.selectionModel().selectedRows()
         if not rows:
             self.paper_detail.clear()
+            self.save_sinta_button.setEnabled(False)
+            self.check_sinta_button.setEnabled(False)
             return
         row = rows[0].row()
+        paper_index_item = self.paper_table.item(row, 0)
+        paper_index = paper_index_item.data(Qt.UserRole) if paper_index_item else None
         papers = self.research_result.get("papers", [])
-        if row >= len(papers):
+        if not isinstance(paper_index, int) or paper_index >= len(papers):
             return
-        paper = papers[row]
+        paper = papers[paper_index]
+        screening = self._sinta_screening(paper)
+        current_status = screening.get("status", "UNVERIFIED")
+        status_index = self.sinta_status_combo.findData(current_status)
+        self.sinta_status_combo.setCurrentIndex(max(0, status_index))
+        self._update_sinta_save_enabled()
+
+        issn_values = paper.get("issn", [])
+        if isinstance(issn_values, str):
+            issn_values = [issn_values]
+        self.check_sinta_button.setEnabled(
+            self._sinta_thread is None
+            and bool(issn_values or str(paper.get("venue") or "").strip())
+        )
+        if screening.get("lookup_candidate"):
+            rank_hint = screening.get("lookup_rank") or "rank not detected"
+            self.sinta_lookup_message.setText(
+                f"Directory match: {screening.get('lookup_candidate')} ({rank_hint}). "
+                "Confirm accreditation period for the paper year before saving."
+            )
+        else:
+            self.sinta_lookup_message.setText(
+                "Select a paper and check its journal using ISSN or journal title."
+            )
         def esc(value):
             if isinstance(value, (list, tuple)):
                 value = ", ".join(map(str, value))
@@ -6919,12 +7231,19 @@ class ResearchPage(QWidget):
             f"<p><b>Authors:</b> {esc(paper.get('authors'))}<br>",
             f"<b>Year:</b> {esc(paper.get('year'))}<br>",
             f"<b>Venue:</b> {esc(paper.get('venue'))}<br>",
+            f"<b>ISSN:</b> {esc(issn_values)}<br>",
             f"<b>Source:</b> {esc(paper.get('source'))}<br>",
             f"<b>DOI:</b> {esc(doi)}<br>",
             f"<b>Relevance:</b> {esc(self._format_score(paper.get('relevance_score')))}<br>",
             f"<b>Dataset usage confidence:</b> {esc(paper.get('dataset_usage_confidence'))}</p>",
+            f"<p><b>SINTA screening:</b> {esc(self._sinta_status_label(paper))}<br>",
+            f"<b>Checked for year:</b> {esc(screening.get('checked_for_year') or 'Not checked yet')}</p>",
             f"<p>{source_link}</p>",
         ]
+        if screening.get("lookup_candidate"):
+            rows_html.append(
+                f"<p><b>SINTA directory match:</b> {esc(screening.get('lookup_candidate'))}</p>"
+            )
         for label, key in (("Dataset usage evidence", "dataset_usage_evidence"),
                            ("Dataset usage limitations", "dataset_usage_limitations")):
             values = paper.get(key) or []
@@ -6936,6 +7255,195 @@ class ResearchPage(QWidget):
         if abstract:
             rows_html.append(f"<h3>Abstract</h3><p>{esc(abstract)}</p>")
         self.paper_detail.setHtml("".join(rows_html))
+
+    def _update_sinta_save_enabled(self, *_):
+        paper_index = self._selected_paper_index()
+        papers = self.research_result.get("papers", [])
+        has_identifier = False
+        if isinstance(paper_index, int) and paper_index < len(papers):
+            paper = papers[paper_index]
+            screening = self._sinta_screening(paper)
+            has_identifier = bool(
+                paper.get("venue") or paper.get("issn") or screening.get("source_url")
+            )
+        self.save_sinta_button.setEnabled(
+            has_identifier
+            and self.sinta_status_combo.currentData() != "UNVERIFIED"
+        )
+
+    def _selected_paper_index(self):
+        rows = self.paper_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.paper_table.item(rows[0].row(), 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _check_sinta_in_app(self):
+        paper_index = self._selected_paper_index()
+        papers = self.research_result.get("papers", [])
+        if not isinstance(paper_index, int) or paper_index >= len(papers):
+            return
+        if self._sinta_thread is not None:
+            return
+
+        paper = papers[paper_index]
+        issn_values = paper.get("issn", [])
+        if isinstance(issn_values, str):
+            issn_values = [issn_values]
+        issn = next((str(value).strip() for value in issn_values if value), "")
+        query = issn
+        if not query:
+            query = str(paper.get("venue") or "").strip()
+        if not query:
+            return
+        cache_key = re.sub(r"[^a-z0-9]", "", query.casefold())
+        cached_result = self._sinta_lookup_cache.get(cache_key)
+        if cached_result is not None:
+            self._on_sinta_lookup_result(
+                paper_index, self._paper_identity(paper), cached_result
+            )
+            return
+
+        self.check_sinta_button.setEnabled(False)
+        self.check_sinta_button.setText("Checking...")
+        self.sinta_lookup_progress.setVisible(True)
+        self.sinta_lookup_message.setText(
+            "Searching the official SINTA directory. The app remains available while this runs."
+        )
+        self._sinta_thread = QThread(self)
+        paper_identity = self._paper_identity(paper)
+        self._sinta_worker = SintaLookupWorker(
+            query, issn, paper.get("year"), paper_index, paper_identity
+        )
+        self._sinta_worker.moveToThread(self._sinta_thread)
+        self._sinta_thread.started.connect(self._sinta_worker.run)
+        self._sinta_worker.finished.connect(self._on_sinta_lookup_result)
+        self._sinta_worker.failed.connect(self._on_sinta_lookup_failed)
+        self._sinta_worker.finished.connect(self._sinta_thread.quit)
+        self._sinta_worker.failed.connect(self._sinta_thread.quit)
+        self._sinta_thread.finished.connect(self._sinta_worker.deleteLater)
+        self._sinta_thread.finished.connect(self._cleanup_sinta_lookup)
+        self._sinta_thread.start()
+
+    @staticmethod
+    def _paper_identity(paper):
+        return "|".join((
+            re.sub(r"\s+", " ", str(paper.get("title") or "").casefold()).strip(),
+            re.sub(r"\s+", " ", str(paper.get("doi") or "").casefold()).strip(),
+        ))
+
+    @Slot(int, str, object)
+    def _on_sinta_lookup_result(self, paper_index, paper_identity, result):
+        papers = self.research_result.get("papers", [])
+        if not isinstance(paper_index, int) or paper_index >= len(papers):
+            return
+        paper = papers[paper_index]
+        if self._paper_identity(paper) != paper_identity:
+            return
+        if not result.get("found"):
+            self._sinta_lookup_cache[
+                re.sub(r"[^a-z0-9]", "", str(result.get("query") or "").casefold())
+            ] = result
+            self.sinta_lookup_message.setText(
+                "No exact journal match was found. Check the ISSN or journal name, then verify a status before saving."
+            )
+            return
+
+        previous = self._sinta_screening(paper)
+        paper["sinta_screening"] = {
+            **previous,
+            "source_url": result.get("url"),
+            "lookup_candidate": result.get("journal") or paper.get("venue") or "Journal record",
+            "lookup_rank": result.get("rank"),
+            "lookup_method": "exact ISSN" if result.get("issn_match") else "exact journal title",
+            "checked_at": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        query_key = re.sub(r"[^a-z0-9]", "", str(result.get("query") or "").casefold())
+        if query_key:
+            self._sinta_lookup_cache[query_key] = result
+        rank = result.get("rank")
+        self._render_filtered_papers()
+        self._show_selected_paper()
+        if rank:
+            if self._selected_paper_index() == paper_index:
+                combo_index = self.sinta_status_combo.findData(rank)
+                if combo_index >= 0:
+                    self.sinta_status_combo.setCurrentIndex(combo_index)
+            self.sinta_lookup_message.setText(
+                f"Directory match: {rank}. Confirm the accreditation period includes {paper.get('year') or 'the paper year'}, then save screening."
+            )
+        else:
+            self.sinta_lookup_message.setText(
+                "Journal match found, but no SINTA rank was detected in the result. Verify the record and choose a status manually."
+            )
+        self._update_sinta_save_enabled()
+
+    @Slot(str)
+    def _on_sinta_lookup_failed(self, error):
+        self.sinta_lookup_message.setText(
+            "Could not reach the SINTA directory. Check your internet connection and try again. "
+            f"Details: {error}"
+        )
+
+    def _cleanup_sinta_lookup(self):
+        self.sinta_lookup_progress.setVisible(False)
+        self.check_sinta_button.setText("Check SINTA")
+        self._sinta_worker = None
+        self._sinta_thread = None
+        self._show_selected_paper()
+
+    def _save_sinta_screening(self):
+        paper_index = self._selected_paper_index()
+        papers = self.research_result.get("papers", [])
+        if not isinstance(paper_index, int) or paper_index >= len(papers):
+            return
+
+        status = self.sinta_status_combo.currentData()
+        if status == "UNVERIFIED":
+            QMessageBox.information(
+                self,
+                "SINTA status not selected",
+                "Check the official journal directory and select a confirmed status first.",
+            )
+            return
+
+        paper = papers[paper_index]
+        previous = self._sinta_screening(paper)
+        paper["sinta_screening"] = {
+            **previous,
+            "status": status,
+            "checked_at": time.strftime("%Y-%m-%d %H:%M"),
+            "checked_for_year": paper.get("year"),
+            "verification": "user-confirmed against the official SINTA directory",
+            "source_url": previous.get("source_url") or self._sinta_search_url(paper),
+        }
+
+        project_id = getattr(self.main_window, "current_project_id", None)
+        if project_id is not None:
+            try:
+                self.main_window.repository.save_workflow_section(
+                    project_id, "research", self.research_result
+                )
+                self.main_window.repository.save_research_result(
+                    project_id, self.research_result
+                )
+            except Exception as error:
+                print(f"Warning: SINTA screening could not be saved: {error}")
+
+        self.main_window.papers_tool_page.update_from_result(self.research_result)
+        self._apply_paper_filter()
+
+    @staticmethod
+    def _sinta_search_url(paper):
+        issn_values = paper.get("issn", [])
+        if isinstance(issn_values, str):
+            issn_values = [issn_values]
+        query = next((str(value).strip() for value in issn_values if value), "")
+        if not query:
+            query = str(paper.get("venue") or "").strip()
+        if not query:
+            return "https://sinta.kemdiktisaintek.go.id/journals"
+        return "https://sinta.kemdiktisaintek.go.id/journals?q=" + quote_plus(query)
 
     # =========================================================
     # HELPERS

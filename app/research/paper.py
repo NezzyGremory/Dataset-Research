@@ -17,6 +17,7 @@ class Paper:
     source: str = ""
     external_id: Optional[str] = None
     keywords: List[str] = field(default_factory=list)
+    issn: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -31,6 +32,7 @@ class Paper:
             "source": self.source,
             "external_id": self.external_id,
             "keywords": self.keywords,
+            "issn": self.issn,
         }
 
     @property
